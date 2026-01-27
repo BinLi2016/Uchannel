@@ -417,7 +417,7 @@ class PCADParser:
                     props[prop.group(1)] = prop.group(2).strip()
                 self.rebar_sets[name] = props
                 print(f"DEBUG: Found single-line rebar_set: {name}")
-            return i
+            return i + 1  # Return next line (caller uses continue, skipping i += 1)
         
         # Multi-line
         match = re.search(r'rebar_set\s+(\w+)', line)
@@ -453,41 +453,93 @@ class PCADParser:
                 m = re.search(r'type\s*=\s*(\w+);', line)
                 if m: shape['type'] = m.group(1)
             elif line.startswith('segments'):
+                # Check for single-line segments
                 m = re.search(r'segments\s*=\s*\[(.*)\];', line)
-                if m: shape['segments'] = m.group(1)
+                if m:
+                    shape['segments'] = m.group(1)
+                else:
+                    # Multi-line segments: read until ];
+                    if '[' in line:
+                        segment_content = line.split('[', 1)[1].strip()
+                        i += 1
+                        while i < len(self.lines):
+                            sl = re.sub(r'//.*$', '', self.lines[i]).strip()
+                            if not sl:
+                                i += 1
+                                continue
+                            if '];' in sl:
+                                segment_content += ' ' + sl.split('];')[0].strip()
+                                break
+                            segment_content += ' ' + sl
+                            i += 1
+                        shape['segments'] = segment_content
             elif line.startswith('bend_radius'):
                 # bend_radius = 2.5d; or bend_radius = [r, r, r, r];
                 m = re.search(r'bend_radius\s*=\s*([^;]+);', line)
                 if m: shape['bend_radius'] = m.group(1).strip()
             elif line.startswith('hooks'):
                 # hooks { start = hook(...); end = hook(...); }
-                i += 1
-                while i < len(self.lines):
-                    hl = re.sub(r'//.*$', '', self.lines[i]).strip()
-                    if not hl:
-                        i += 1
-                        continue
-                    if hl == '}': break
-                    # start = hook(angle=135, length=10d);
-                    m = re.search(r'(start|end)\s*=\s*hook\(([^)]+)\)\s*;', hl)
-                    if m:
+                # Check for single-line hooks block
+                if '{' in line and '}' in line:
+                    # Single-line: hooks { start = hook(...); end = hook(...); }
+                    for m in re.finditer(r'(start|end)\s*=\s*hook\(([^)]+)\)\s*;?', line):
                         hook_name = m.group(1)
                         hook_params = {}
                         for param in re.finditer(r'(\w+)\s*=\s*([^,)]+)', m.group(2)):
                             hook_params[param.group(1)] = param.group(2).strip()
                         shape['hooks'][hook_name] = hook_params
+                else:
+                    # Multi-line hooks block
                     i += 1
-            elif line.startswith('dims'):
-                i += 1
-                while i < len(self.lines):
-                    dl = re.sub(r'//.*$', '', self.lines[i]).strip()
-                    if not dl:
+                    while i < len(self.lines):
+                        hl = re.sub(r'//.*$', '', self.lines[i]).strip()
+                        if not hl:
+                            i += 1
+                            continue
+                        if hl == '}':
+                            break
+                        # start = hook(angle=135, length=10d);
+                        m = re.search(r'(start|end)\s*=\s*hook\(([^)]+)\)\s*;', hl)
+                        if m:
+                            hook_name = m.group(1)
+                            hook_params = {}
+                            for param in re.finditer(r'(\w+)\s*=\s*([^,)]+)', m.group(2)):
+                                hook_params[param.group(1)] = param.group(2).strip()
+                            shape['hooks'][hook_name] = hook_params
                         i += 1
-                        continue
-                    if dl == '}': break
-                    m = re.search(r'(\w+)\s*=\s*([^;]+);', dl)
-                    if m: shape['dims'][m.group(1)] = m.group(2).strip()
+            elif line.startswith('dims'):
+                # Check for single-line dims block: dims { L; } or dims { a = expr; b = expr; }
+                if '{' in line and '}' in line:
+                    # Extract content between braces
+                    brace_content = re.search(r'\{([^}]*)\}', line)
+                    if brace_content:
+                        content = brace_content.group(1).strip()
+                        # Parse multiple dims separated by ;
+                        for dim_part in content.split(';'):
+                            dim_part = dim_part.strip()
+                            if not dim_part:
+                                continue
+                            # a = expr or just L (single var)
+                            m = re.search(r'(\w+)\s*=\s*(.+)', dim_part)
+                            if m:
+                                shape['dims'][m.group(1)] = m.group(2).strip()
+                            else:
+                                # Single variable name like L
+                                shape['dims'][dim_part] = dim_part
+                else:
+                    # Multi-line dims block
                     i += 1
+                    while i < len(self.lines):
+                        dl = re.sub(r'//.*$', '', self.lines[i]).strip()
+                        if not dl:
+                            i += 1
+                            continue
+                        if dl == '}':
+                            break
+                        m = re.search(r'(\w+)\s*=\s*([^;]+);', dl)
+                        if m:
+                            shape['dims'][m.group(1)] = m.group(2).strip()
+                        i += 1
             elif line.startswith('annotations'):
                 i += 1
                 while i < len(self.lines):
@@ -1386,6 +1438,174 @@ class AutoLISPGenerator:
                 self.code.append(f"    (command \"._DIMLINEAR\" (list {from_x} {from_y} 0.0) (list {to_x} {to_y} 0.0) dim_pt)")
             
             self.code.append("")
+    
+    def _generate_barshapes(self):
+        """生成钢筋大样代码 - generates AutoLISP functions to draw bar shapes"""
+        if not self.parser.barshapes:
+            return
+        
+        self.code.append("  ; Bar shapes (rebar detail drawings)")
+        self.code.append("  ; Each barshape generates a function: (draw-barshape-<Name> base_pt)")
+        self.code.append("  ; base_pt is a list (x y z), parameters are taken from global variables")
+        self.code.append("")
+        
+        # Generate a drawing function for each barshape
+        for name, shape in self.parser.barshapes.items():
+            shape_type = shape.get('type', 'custom')
+            segments = shape.get('segments', '')
+            dims = shape.get('dims', {})
+            hooks = shape.get('hooks', {})
+            
+            self.code.append(f"  ; --- Barshape: {name} (type: {shape_type}) ---")
+            
+            # Parse segments if available
+            if segments:
+                # Parse segment string: "(x1, y1) -> (x2, y2) -> ..."
+                points = self._parse_segments_to_points(segments)
+                
+                if points:
+                    self.code.append(f"  ; Dims: {dims}")
+                    self.code.append(f"  (defun draw-barshape-{name} (base_pt / pt x y)")
+                    # Switch to rebar layer
+                    self.code.append(f"    (command \"._LAYER\" \"_S\" \"rebar\" \"\")")
+                    self.code.append(f"    (command \"._PLINE\")")
+                    
+                    for pt in points:
+                        x_expr = self._convert_expr_to_lisp(pt[0])
+                        y_expr = self._convert_expr_to_lisp(pt[1])
+                        # Calculate absolute point: base_x + x, base_y + y
+                        # Use setq to calculate intermediate values for clarity/debugging
+                        self.code.append(f"    (setq x (+ (car base_pt) {x_expr}))")
+                        self.code.append(f"    (setq y (+ (cadr base_pt) {y_expr}))")
+                        self.code.append(f"    (command (list x y))")
+                    
+                    self.code.append(f"    (command \"\")")
+                    
+                    # TODO: Implement hook drawing logic
+                    if hooks:
+                        self.code.append(f"    ; Note: Hooks not yet visualized: {hooks}")
+                    
+                    self.code.append(f"  )")
+            else:
+                self.code.append(f"  ; (No segment data for {name})")
+            
+            self.code.append("")
+        
+        self.code.append("")
+    
+    def _parse_segments_to_points(self, segments_str: str) -> list:
+        """Parse segment string like '(x1, y1) -> (x2, y2) -> ...' into list of point tuples"""
+        points = []
+        # Split by ->
+        parts = segments_str.split('->')
+        for part in parts:
+            part = part.strip()
+            # Extract (x, y) from each part
+            match = re.search(r'\(([^)]+)\)', part)
+            if match:
+                coord_str = match.group(1)
+                # Split by comma, handling potential spaces
+                coords = [c.strip() for c in coord_str.split(',')]
+                if len(coords) == 2:
+                    points.append((coords[0], coords[1]))
+        return points
+    
+    def _generate_tables(self):
+        """生成表格代码 - generates AutoLISP code to draw tables"""
+        if not self.parser.tables:
+            return
+        
+        self.code.append("  ; Tables - Generate data structures for table rendering")
+        
+        for name, table in self.parser.tables.items():
+            table_type = table.get('type', 'schedule')
+            columns = table.get('columns', {})
+            rows = table.get('rows', [])
+            
+            self.code.append(f"  ; --- Table: {name} ---")
+            self.code.append(f"  ; Type: {table_type}, Columns: {len(columns)}, Rows: {len(rows)}")
+            
+            # Generate column names list
+            col_names = list(columns.keys())
+            quoted_cols = [f'"{c}"' for c in col_names]
+            cols_str = ' '.join(quoted_cols)
+            self.code.append(f"  (setq table_{name}_cols '({cols_str}))")
+            
+            # Generate rows data as list of lists
+            self.code.append(f"  (setq table_{name}_data '(")
+            for i, row in enumerate(rows):
+                row_values = []
+                for col in col_names:
+                    val = row.get(col, '')
+                    # Escape quotes in value
+                    val = str(val).replace('"', '\\"')
+                    row_values.append(f'"{val}"')
+                self.code.append(f"    ({' '.join(row_values)})  ; Row {i+1}")
+            self.code.append("  ))")
+            
+            # Generate a helper function to draw this table
+            self.code.append(f"  ; To draw: (draw-table-{name} base_x base_y cell_width cell_height)")
+            self.code.append("")
+        
+        self.code.append("")
+    
+    def _generate_sheets(self):
+        """生成图纸代码 - generates AutoLISP code for sheet/layout setup"""
+        if not self.parser.sheets:
+            return
+        
+        # Paper size constants (in mm)
+        paper_sizes = {
+            'A4': (210, 297),
+            'A3': (420, 297),
+            'A2': (594, 420),
+            'A1': (841, 594),
+            'A0': (1189, 841),
+        }
+        
+        self.code.append("  ; Sheets (layout setup)")
+        
+        for name, sheet in self.parser.sheets.items():
+            size = sheet.get('size', 'A3')
+            scale = sheet.get('scale', '1:1')
+            
+            self.code.append(f"  ; --- Sheet: {name} ---")
+            
+            # Get paper dimensions
+            w, h = paper_sizes.get(size, (420, 297))
+            self.code.append(f"  (setq sheet_{name}_width {w}.0)")
+            self.code.append(f"  (setq sheet_{name}_height {h}.0)")
+            
+            # Parse scale (e.g., "1:50" -> 0.02)
+            scale_factor = 1.0
+            if ':' in scale:
+                parts = scale.split(':')
+                try:
+                    scale_factor = float(parts[0]) / float(parts[1])
+                except:
+                    scale_factor = 1.0
+            self.code.append(f"  (setq sheet_{name}_scale {scale_factor})")
+            
+            # Titleblock info
+            tb = sheet.get('titleblock', {})
+            if tb:
+                title = tb.get('title', '')
+                date = tb.get('date', '')
+                self.code.append(f"  (setq sheet_{name}_title \"{title}\")")
+                self.code.append(f"  (setq sheet_{name}_date \"{date}\")")
+            
+            # Placements - reference what should be placed on this sheet
+            placements = sheet.get('placements', [])
+            if placements:
+                self.code.append(f"  ; Placements for {name}:")
+                for p in placements:
+                    ptype = p.get('type')
+                    pname = p.get('name')
+                    self.code.append(f"  ;   - {ptype}: {pname}")
+            
+            self.code.append("")
+        
+        self.code.append("")
     
     def _add_usage_comments(self):
         """添加使用说明"""
