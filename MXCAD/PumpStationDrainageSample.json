@@ -1,0 +1,86 @@
+{
+  "section1": {
+    "outerWidthMm": 600,
+    "outerHeightMm": 600,
+    "innerWidthMm": 400,
+    "innerHeightMm": 400,
+    "wallThicknessMm": 100,
+    "baseThicknessMm": 100,
+    "topOuterLipWidthMm": 40,
+    "topSeatWidthMm": 60,
+    "topSeatDepthMm": 100
+  },
+  "section2": {
+    "outerWidthMm": 600,
+    "outerHeightMm": 800,
+    "innerWidthMm": 400,
+    "innerHeightMm": 600,
+    "wallThicknessMm": 100,
+    "baseThicknessMm": 150,
+    "topOuterLipWidthMm": 40,
+    "topSeatWidthMm": 60,
+    "topSeatDepthMm": 100
+  },
+  "cover": {
+    "widthMm": 490,
+    "lengthMm": 480,
+    "thicknessMm": 120,
+    "bearingMm": 40,
+    "slots": {
+      "count": 8,
+      "slotWidthMm": 25,
+      "slotLengthMm": 120
+    },
+    "angleSteel": {
+      "spec": "L25x25x3",
+      "lengthCm": 12,
+      "qty": 4
+    }
+  },
+  "channelTable": {
+    "title": "水沟钢筋数量表",
+    "headers": ["编号", "图式", "直径(mm)", "每根长(m)", "根数", "总长(m)", "单位重(kg/m)", "总重(kg)"],
+    "items": [
+      {"id": "N1", "diameterMm": 18, "lengthPerBarM": 1.957, "quantity": 100, "unitWeightKgPerM": 1.998, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":0,"y":520},{"x":957,"y":520},{"x":957,"y":0}], "segmentDimsMmText": ["0.52","0.957","0.52"]}},
+      {"id": "N2", "diameterMm": 12, "lengthPerBarM": 0.879, "quantity": 200, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":180,"y":0},{"x":180,"y":519},{"x":360,"y":519}], "segmentDimsMmText": ["0.18","0.519","0.18"]}},
+      {"id": "N3", "diameterMm": 12, "lengthPerBarM": 10.203, "quantity": 6, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":10203,"y":0}], "segmentDimsMmText": ["10.203"]}},
+      {"id": "N3-1", "diameterMm": 12, "lengthPerBarM": 5.216, "quantity": 12, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":5216,"y":0}], "segmentDimsMmText": ["5.216"]}},
+      {"id": "N1'", "diameterMm": 18, "lengthPerBarM": 1.957, "quantity": 300, "unitWeightKgPerM": 1.998, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":0,"y":520},{"x":957,"y":520},{"x":957,"y":0}], "segmentDimsMmText": ["0.52","0.957","0.52"]}},
+      {"id": "N2'", "diameterMm": 12, "lengthPerBarM": 0.879, "quantity": 600, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":180,"y":0},{"x":180,"y":519},{"x":360,"y":519}], "segmentDimsMmText": ["0.18","0.519","0.18"]}},
+      {"id": "N3'", "diameterMm": 12, "lengthPerBarM": 30.232, "quantity": 6, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":30232,"y":0}], "segmentDimsMmText": ["30.232"]}},
+      {"id": "N3-1'", "diameterMm": 12, "lengthPerBarM": 15.187, "quantity": 12, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":15187,"y":0}], "segmentDimsMmText": ["15.187"]}}
+    ],
+    "concreteText": "C40混凝土: 6.1m³",
+    "totalSteelText": "钢筋合计: 2621.3kg"
+  },
+  "coverTable": {
+    "title": "边沟盖板二单位工程数量表(每块)",
+    "headers": ["编号", "图式", "直径(mm)", "每根长(m)", "根数", "总长(m)", "单位重(kg/m)", "总重(kg)"],
+    "items": [
+      {"id": "①", "diameterMm": 12, "lengthPerBarM": 0.42, "quantity": 6, "unitWeightKgPerM": 0.888, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":420,"y":0}], "segmentDimsMmText": ["42"]}},
+      {"id": "②", "diameterMm": 16, "lengthPerBarM": 0.41, "quantity": 12, "unitWeightKgPerM": 1.578, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":410,"y":0}], "segmentDimsMmText": ["41"]}},
+      {"id": "③", "diameterMm": 8, "lengthPerBarM": 0.10, "quantity": 15, "unitWeightKgPerM": 0.395, "bendShape": {"pointsMm": [{"x":0,"y":0},{"x":100,"y":0}], "segmentDimsMmText": ["10"]}}
+    ],
+    "concreteText": "盖板C40砼: 0.029m³/块",
+    "totalSteelText": "钢筋合计: 13.49kg + 角钢0.57kg"
+  },
+  "projectInfo": {
+    "projectName": "市政工程",
+    "drawingTitle": "泵站非机动车道排水边沟及盖板配筋图",
+    "drawingNumber": "PS-DRAIN-002",
+    "scale": "1:10",
+    "designer": "",
+    "checker": "",
+    "approver": "",
+    "date": "",
+    "company": ""
+  },
+  "notes": [
+    "1. 钢筋直径及详图单位为mm, 其余尺寸单位为cm。",
+    "2. 水流面涂聚氨酯防水涂料。",
+    "3. φ为HPB300钢筋, Φ为HRB400钢筋。",
+    "4. 混凝土均采用C40。",
+    "5. 伸缩缝处设3cm厚沥青木板, 10m/道。",
+    "6. 盖板为有孔水泥砼盖板, 角钢包边L25x25x3。"
+  ]
+}

@@ -1,0 +1,4 @@
+OS Version: Microsoft Windows NT 10.0.26100.0
+.NET Version: 9.0.9
+Processor Count: 32
+Current Directory: H:\U形槽配筋软件

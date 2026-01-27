@@ -1,0 +1,21 @@
+*** Begin Patch
+*** Update File: index.html
+@@
+-            rotatedDim.rotation = 0 // aligns with X-axis baseline
+-            rotatedDim.textAttachment = McDb.AttachmentPoint.kTopCenter
+-            rotatedDim.dimensionText = 'Span 90'
+-            rotatedDim.trueColor = new McCmColor(255, 170, 0)
+-            console.info('[MXCAD demo] Rotated dimension properties', Object.keys(rotatedDim || {}))
++            rotatedDim.rotation = 0 // aligns with X-axis baseline
++            rotatedDim.textAttachment = McDb.AttachmentPoint.kTopCenter
++            rotatedDim.dimensionText = 'Span 90'
++            rotatedDim.trueColor = new McCmColor(255, 170, 0)
++            // Soften dimension scale (DIMVAR codes)
++            rotatedDim.setDimVarDouble?.(140, 6) // DIMTXT text height
++            rotatedDim.setDimVarDouble?.(41, 6)  // DIMASZ arrow size
++            rotatedDim.setDimVarDouble?.(144, 2) // DIMEXO extension line offset
++            rotatedDim.setDimVarDouble?.(147, 2) // DIMDLI dimension line increment
+             const rotatedDimId = currentSpace.appendAcDbEntity(rotatedDim)
+             console.info('[MXCAD demo] Rotated dimension id', rotatedDimId, 'isValid:', rotatedDimId?.isValid?.())
+             mxcadInstance.drawEntity && mxcadInstance.drawEntity(rotatedDim)
+*** End Patch

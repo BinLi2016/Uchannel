@@ -1,0 +1,173 @@
+{
+  "section": {
+    "outerWidthMm": 600,
+    "outerHeightMm": 600,
+    "innerWidthMm": 400,
+    "innerHeightMm": 450,
+    "wallThicknessMm": 100,
+    "baseThicknessMm": 150,
+    "topOuterLipWidthMm": 40,
+    "topSeatWidthMm": 60,
+    "topSeatDepthMm": 100
+  },
+  "cover": {
+    "widthMm": 500,
+    "lengthMm": 490,
+    "thicknessMm": 100,
+    "bearingMm": 50
+  },
+  "channelTable": {
+    "title": "水沟钢筋数量表",
+    "headers": [
+      "编号",
+      "图式",
+      "直径(mm)",
+      "每根长(m)",
+      "根数",
+      "总长(m)",
+      "单位重(kg/m)",
+      "总重(kg)"
+    ],
+    "items": [
+      {
+        "id": "N1",
+        "diameterText": "Φ18",
+        "diameterMm": 18,
+        "lengthPerBarM": 1.58,
+        "quantity": 10,
+        "unitWeightKgPerM": 1.998,
+        "totalLengthM": 15.8,
+        "totalWeightKg": 31.57,
+        "shapeKind": "U",
+        "bendShape": {
+          "pointsMm": [
+            { "x": 0, "y": 0 },
+            { "x": 0, "y": 510 },
+            { "x": 560, "y": 510 },
+            { "x": 560, "y": 0 }
+          ],
+          "segmentDimsMmText": ["510", "560", "510"]
+        }
+      },
+      {
+        "id": "N2",
+        "diameterText": "Φ12",
+        "diameterMm": 12,
+        "lengthPerBarM": 0.65,
+        "quantity": 20,
+        "unitWeightKgPerM": 0.888,
+        "totalLengthM": 13,
+        "totalWeightKg": 11.54,
+        "shapeKind": "Bracket",
+        "bendShape": {
+          "pointsMm": [
+            { "x": 0, "y": 0 },
+            { "x": 140, "y": 0 },
+            { "x": 140, "y": 410 },
+            { "x": 280, "y": 410 }
+          ],
+          "segmentDimsMmText": ["140", "410", "140"]
+        }
+      },
+      {
+        "id": "N3",
+        "diameterText": "Φ12",
+        "diameterMm": 12,
+        "lengthPerBarM": 1,
+        "quantity": 12,
+        "unitWeightKgPerM": 0.888,
+        "totalLengthM": 12,
+        "totalWeightKg": 10.66,
+        "shapeKind": "Straight",
+        "bendShape": {
+          "pointsMm": [{ "x": 0, "y": 0 }, { "x": 1000, "y": 0 }],
+          "segmentDimsMmText": ["1000"]
+        }
+      }
+    ],
+    "concreteText": "C40混凝土: 0.13m³/m",
+    "totalSteelText": "钢筋总重: 53.77kg"
+  },
+  "coverTable": {
+    "title": "水沟盖板钢筋数量表",
+    "headers": [
+      "编号",
+      "图式",
+      "直径(mm)",
+      "每根长(m)",
+      "根数",
+      "总长(m)",
+      "单位重(kg/m)",
+      "总重(kg)"
+    ],
+    "items": [
+      {
+        "id": "M1",
+        "diameterText": "Φ16",
+        "diameterMm": 16,
+        "lengthPerBarM": 0.46,
+        "quantity": 14,
+        "unitWeightKgPerM": 1.579,
+        "totalLengthM": 6.44,
+        "totalWeightKg": 10.17,
+        "shapeKind": "Straight",
+        "bendShape": {
+          "pointsMm": [{ "x": 0, "y": 0 }, { "x": 460, "y": 0 }],
+          "segmentDimsMmText": ["460"]
+        }
+      },
+      {
+        "id": "M2",
+        "diameterText": "Φ16",
+        "diameterMm": 16,
+        "lengthPerBarM": 0.44,
+        "quantity": 10,
+        "unitWeightKgPerM": 1.579,
+        "totalLengthM": 4.4,
+        "totalWeightKg": 6.95,
+        "shapeKind": "Straight",
+        "bendShape": {
+          "pointsMm": [{ "x": 0, "y": 0 }, { "x": 440, "y": 0 }],
+          "segmentDimsMmText": ["440"]
+        }
+      },
+      {
+        "id": "M3",
+        "diameterText": "φ8",
+        "diameterMm": 8,
+        "lengthPerBarM": 0.08,
+        "quantity": 12,
+        "unitWeightKgPerM": 0.395,
+        "totalLengthM": 0.96,
+        "totalWeightKg": 0.38,
+        "shapeKind": "Straight",
+        "bendShape": {
+          "pointsMm": [{ "x": 0, "y": 0 }, { "x": 80, "y": 0 }],
+          "segmentDimsMmText": ["80"]
+        }
+      }
+    ],
+    "concreteText": "C40混凝土: 0.049m³/块",
+    "totalSteelText": "钢筋总重: 17.48kg"
+  },
+  "projectInfo": {
+    "projectName": "市政工程",
+    "drawingTitle": "机动车道排水沟边坡及盖板配筋图",
+    "drawingNumber": "PS-DRAIN-001",
+    "scale": "1:10",
+    "designer": "",
+    "checker": "",
+    "approver": "",
+    "date": "2026.01",
+    "company": ""
+  },
+  "notes": [
+    "1. 钢筋直径及详图单位为mm, 其余尺寸单位为cm。",
+    "2. 水流面涂聚氨酯防水涂料。",
+    "3. φ为HPB300钢筋, Φ为HRB400钢筋。",
+    "4. 水沟及盖板混凝土均采用C40。",
+    "5. 纵向钢筋间距≤20cm, 箍筋竖向间距≤40cm(未注明时)。",
+    "6. 侧墙伸缩缝处设3cm厚沥青木板。",
+    "7. 适用于除ZU9-2、ZU10-2、YU9、YU10以外的机动车道U形排水沟。"
+  ]
+}

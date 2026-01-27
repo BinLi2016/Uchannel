@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>U形槽配筋设计</title>
+  <!-- MXCAD depends on mxdraw. Load UMD builds from unpkg CDN. -->
+  <script src="https://unpkg.com/mxdraw" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/mxcad" crossorigin="anonymous"></script>
+  <script src="BlockHelper.js"></script>
+  <script src="UChannelTableData.js"></script>
+  <script src="UChannelQuantityTable2Data.js"></script>
+  <script src="UChannelQuantityTable3Data.js"></script>
+  <!-- 模块化组件 (按依赖顺序加载) -->
+  <script src="core/UnitConverter.js"></script>
+  <script src="core/EntityBuilders.js"></script>
+  <script src="core/LayoutEngine.js"></script>
+  <script src="data/ParameterMapper.js"></script>
+  <script src="components/RebarLayer.js"></script>
+  <script src="components/DimensionLayer.js"></script>
+  <script src="views/CrossSectionView.js"></script>
+  <script src="views/PlanView.js"></script>
+  <script src="views/ElevationView.js"></script>
+  <!-- 主绘制模块 -->
+  <script src="UChannelPainter.js"></script>
+  <script src="DrainageChannelData.js"></script>
+  <script src="DrainageChannelGeometry.js"></script>
+  <script src="DrainageChannelPainter.js"></script>
+  <script src="DrainageChannelMain.js"></script>
+  <script src="DividerBeltData.js"></script>
+  <script src="DividerBeltPainter.js"></script>
+  <script src="DividerBeltMain.js"></script>
+  <script src="CurbStoneData.js"></script>
+  <script src="CurbStoneMain.js"></script>
+  <script src="PumpStationDrainageMain.js"></script>
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    .viewport {
+      height: 80vh;
+      overflow: hidden;
+      border-top: 1px solid #e5e5e5;
+      border-bottom: 1px solid #e5e5e5;
+    }
+
+    #myCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .info {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      padding: 12px 16px;
+    }
+
+    .info code {
+      background: #f6f8fa;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="info">
+    <strong>MXCAD</strong> — U形槽配筋设计
+    <div>文件：<code>index.html</code>、<code>UChannelPainter.js</code>、<code>UChannelTableData.js</code></div>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+      <button onclick="window.drawUChannelTable1()"
+        style="padding: 8px 16px; cursor: pointer; background: #0078d4; color: white; border: none; border-radius: 4px;">绘制参数表1</button>
+      <button onclick="window.drawUChannelQuantityTable2('YU1')"
+        style="padding: 8px 16px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 4px;">绘制YU1数量表2</button>
+      <button onclick="window.drawUChannelQuantityTable3('YU5')"
+        style="padding: 8px 16px; cursor: pointer; background: #ffc107; color: black; border: none; border-radius: 4px;">绘制YU5数量表3</button>
+      <button onclick="window.drawDrainageChannelReinforcement()"
+        style="padding: 8px 16px; cursor: pointer; background: #dc3545; color: white; border: none; border-radius: 4px; font-weight: bold;">绘制排水沟配筋图</button>
+
+      <button onclick="window.drawDrainageMotorLaneFromSample()"
+        style="padding: 8px 16px; cursor: pointer; background: #0ea5e9; color: white; border: none; border-radius: 4px;">绘制排水沟 (机动车道示例)</button>
+
+      <button onclick="window.drawDividerBeltLayoutSheet()"
+        style="padding: 8px 16px; cursor: pointer; background: #334155; color: white; border: none; border-radius: 4px;">绘制分隔带布置图</button>
+
+      <button onclick="window.drawDividerBeltQuantityTables()"
+        style="padding: 8px 16px; cursor: pointer; background: #475569; color: white; border: none; border-radius: 4px;">绘制分隔带数量表</button>
+
+      <button onclick="window.drawPumpStationDrainageFromSample()"
+        style="padding: 8px 16px; cursor: pointer; background: #0f766e; color: white; border: none; border-radius: 4px;">绘制泵站排水沟</button>
+
+      <button onclick="window.drawCurbStoneFromSample()"
+        style="padding: 8px 16px; cursor: pointer; background: #7c2d12; color: white; border: none; border-radius: 4px;">绘制路缘石</button>
+    </div>
+  </div>
+  <div class="viewport">
+    <canvas id="myCanvas"></canvas>
+  </div>
+
+  <script>
+    // MXCAD UMD exposes global `MxCAD` with classes and utilities
+    const MX = window.MxCAD || {}
+    const {
+      createMxCad,
+      McDbLine,
+      McDbText,
+      McDbPolyline,
+      McDbHatch,
+      McDbRotatedDimension,
+      McGePoint3d,
+      McGePoint3dArray,
+      McCmColor,
+      McDb,
+      McDbTextStyleTableRecord,
+      McDbDimStyleTableRecord,
+      MxCpp,
+    } = MX
+
+    if (!createMxCad) {
+      console.error('MxCAD createMxCad helper not available. Check CDN scripts above.')
+    } else {
+      let cachedMxCad = null
+      let lastGetCurrentError = null
+      const DEFAULT_TEXT_STYLE = Object.freeze({
+        name: 'CN_Text',
+        shx: 'romans.shx',
+        bigShx: 'hztxt.shx',
+        xScale: 0.75,
+      })
+      const defaultTextStyleCache = new WeakMap()
+      let defaultTextStyleAnnounced = false
+
+      const ensureDefaultTextStyle = (mxcadInstance) => {
+        if (!mxcadInstance) {
+          return null
+        }
+        try {
+          const database = mxcadInstance.getDatabase?.()
+          if (!database) {
+            console.warn('[MXCAD demo] database unavailable; cannot ensure default style yet')
+            return null
+          }
+          const cached = defaultTextStyleCache.get(database)
+          if (cached?.id?.isValid?.()) {
+            return cached
+          }
+          const textStyleTable = database?.getTextStyleTable?.()
+          if (!textStyleTable) {
+            console.warn('[MXCAD demo] text style table unavailable; cannot ensure default style yet')
+            return null
+          }
+          const { name, shx, bigShx, xScale } = DEFAULT_TEXT_STYLE
+          let styleId = null
+
+          const hasStyle =
+            typeof textStyleTable.has === 'function' ? textStyleTable.has(name) : undefined
+
+          if (hasStyle && typeof textStyleTable.get === 'function') {
+            console.info('[MXCAD demo] [text-style] found existing style entry for', name)
+            const candidateId = textStyleTable.get(name)
+            if (candidateId?.isValid?.()) {
+              styleId = candidateId
+              const existingRecord = styleId.getMcDbTextStyleTableRecord?.()
+              if (existingRecord) {
+                existingRecord.fileName = shx
+                existingRecord.bigFontFileName = bigShx
+                existingRecord.xScale = xScale
+                console.info('[MXCAD demo] [text-style] existing style updated', {
+                  name,
+                  fileName: existingRecord.fileName,
+                  bigFontFileName: existingRecord.bigFontFileName,
+                  xScale: existingRecord.xScale,
+                })
+              }
+            } else {
+              console.warn('[MXCAD demo] [text-style] table reports style exists but id invalid; will recreate')
+            }
+          } else if (hasStyle === false) {
+            console.info('[MXCAD demo] [text-style] style not yet present', name)
+          }
+
+          if (!styleId) {
+            if (typeof mxcadInstance.addTextStyle === 'function') {
+              console.info('[MXCAD demo] [text-style] create via addTextStyle', { name, shx, bigShx, xScale })
+              styleId = mxcadInstance.addTextStyle(name, shx, bigShx, xScale)
+            } else {
+              console.info('[MXCAD demo] [text-style] create via table.add', { name, shx, bigShx, xScale })
+              const record = new McDbTextStyleTableRecord()
+              record.name = name
+              record.fileName = shx
+              record.bigFontFileName = bigShx
+              record.xScale = xScale
+              if (typeof textStyleTable.add === 'function') {
+                styleId = textStyleTable.add(record)
+              } else {
+                console.warn('[MXCAD demo] text style table missing add(); cannot register default style')
+                return null
+              }
+            }
+          }
+
+          if (styleId && !styleId.isValid?.() && typeof textStyleTable.get === 'function') {
+            const fallbackId = textStyleTable.get(name)
+            if (fallbackId?.isValid?.()) {
+              styleId = fallbackId
+              console.info('[MXCAD demo] [text-style] replaced invalid id with fallback lookup')
+            }
+          }
+
+          if (styleId?.isValid?.()) {
+            const finalRecord = styleId.getMcDbTextStyleTableRecord?.()
+            if (finalRecord) {
+              finalRecord.fileName = shx
+              finalRecord.bigFontFileName = bigShx
+              finalRecord.xScale = xScale
+              console.info('[MXCAD demo] [text-style] final record state', {
+                name: finalRecord.name,
+                fileName: finalRecord.fileName,
+                bigFontFileName: finalRecord.bigFontFileName,
+                xScale: finalRecord.xScale,
+              })
+            }
+            try {
+              if (typeof mxcadInstance.setSysVarString === 'function') {
+                mxcadInstance.setSysVarString('TEXTSTYLE', name)
+              } else if (database?.setSysVarString) {
+                database.setSysVarString('TEXTSTYLE', name)
+              }
+              const currentStyleName =
+                (typeof mxcadInstance.getSysVarString === 'function' && mxcadInstance.getSysVarString('TEXTSTYLE')) ||
+                database?.getSysVarString?.('TEXTSTYLE')
+              console.info('[MXCAD demo] [text-style] TEXTSTYLE sysvar now', currentStyleName)
+            } catch (setVarError) {
+              console.warn('[MXCAD demo] Unable to set TEXTSTYLE sysvar', setVarError)
+            }
+            if (!defaultTextStyleAnnounced) {
+              console.info('[MXCAD demo] Default text style ready:', name)
+              defaultTextStyleAnnounced = true
+            }
+            const payload = { name, id: styleId }
+            defaultTextStyleCache.set(database, payload)
+            return payload
+          }
+
+          console.warn('[MXCAD demo] Default text style creation returned invalid id')
+        } catch (error) {
+          console.warn('[MXCAD demo] ensureDefaultTextStyle failed', error)
+        }
+        return null
+      }
+
+      const DEFAULT_DIM_STYLE = Object.freeze({
+        name: 'CN_Dim',
+      })
+      const defaultDimStyleCache = new WeakMap()
+
+      const ensureDefaultDimStyle = (mxcadInstance, textStylePayload, textStyleRecord) => {
+        if (!mxcadInstance) {
+          return null
+        }
+        try {
+          const database = mxcadInstance.getDatabase?.()
+          if (!database) {
+            console.warn('[MXCAD demo] database unavailable; cannot ensure dimension style yet')
+            return null
+          }
+          const cached = defaultDimStyleCache.get(database)
+          if (cached?.id?.isValid?.()) {
+            return cached
+          }
+          const dimStyleTable = database?.getDimStyleTable?.()
+          if (!dimStyleTable) {
+            console.warn('[MXCAD demo] dim style table unavailable; cannot ensure dimension style yet')
+            return null
+          }
+          const { name } = DEFAULT_DIM_STYLE
+          const hasDimStyle = dimStyleTable.has?.(name)
+          let dimStyleId = null
+          if (hasDimStyle && typeof dimStyleTable.get === 'function') {
+            dimStyleId = dimStyleTable.get(name)
+          }
+          let dimStyleRecord = dimStyleId?.getMcDbDimStyleTableRecord?.()
+          if (!dimStyleRecord) {
+            dimStyleRecord = new McDbDimStyleTableRecord()
+            dimStyleRecord.name = name
+            if (typeof dimStyleTable.add === 'function') {
+              dimStyleId = dimStyleTable.add(dimStyleRecord)
+              dimStyleRecord = dimStyleId?.getMcDbDimStyleTableRecord?.() || dimStyleRecord
+            } else {
+              console.warn('[MXCAD demo] dim style table missing add(); cannot register default dimension style')
+            }
+          }
+          if (!dimStyleId?.isValid?.()) {
+            console.warn('[MXCAD demo] Default dimension style id invalid after ensure step')
+            return null
+          }
+          const dimXScale = textStyleRecord?.xScale ?? DEFAULT_TEXT_STYLE.xScale ?? 1
+          try {
+            if (textStylePayload?.id?.isValid?.()) {
+              dimStyleRecord.setDimVarObjectId?.(340, textStylePayload.id)
+            } else if (textStylePayload?.name) {
+              dimStyleRecord.setDimVarString?.(340, textStylePayload.name)
+            }
+            dimStyleRecord.setDimVarDouble?.(146, dimXScale)
+            // 使用统一的标注比例配置（通过 DIMSCALE 控制整体比例）
+            const dimConfig = window.DIMENSION_SCALE_CONFIG || { overallDimScale: 1.0, baseTextHeight: 10, baseArrowSize: 8 };
+            const overallScale = dimConfig.overallDimScale || 1.0;
+            dimStyleRecord.setDimVarDouble?.(40, 40.0) // DIMSCALE = 40.0
+            console.info('[MXCAD demo] Dimension style configured', {
+              dimStyleName: dimStyleRecord.name,
+              dimTextStyleName: textStylePayload?.name,
+              dimXScale,
+              dimScale: 40.0,
+              overallDimScale: overallScale,
+            })
+          } catch (dimStyleConfigError) {
+            console.warn('[MXCAD demo] Failed to configure dimension style record', dimStyleConfigError)
+          }
+          try {
+            mxcadInstance.drawDimStyle = dimStyleRecord.name
+            console.info('[MXCAD demo] Global drawDimStyle set', dimStyleRecord.name)
+          } catch (dimStyleSetError) {
+            console.warn('[MXCAD demo] Unable to set global drawDimStyle', dimStyleSetError)
+          }
+          const payload = { name: dimStyleRecord.name, id: dimStyleId, record: dimStyleRecord }
+          defaultDimStyleCache.set(database, payload)
+          return payload
+        } catch (error) {
+          console.warn('[MXCAD demo] ensureDefaultDimStyle failed', error)
+        }
+        return null
+      }
+
+      const resolveInstance = () => {
+        if (cachedMxCad) {
+          return cachedMxCad
+        }
+        if (typeof MxCpp?.getCurrentMxCAD === 'function') {
+          try {
+            const inst = MxCpp.getCurrentMxCAD()
+            if (inst) {
+              cachedMxCad = inst
+              lastGetCurrentError = null
+              return inst
+            }
+          } catch (err) {
+            lastGetCurrentError = err
+          }
+        }
+        return null
+      }
+
+      let sampleEntitiesDrawn = false
+
+      const drawSampleEntities = (mxcadInstance) => {
+        if (sampleEntitiesDrawn || !mxcadInstance) {
+          return
+        }
+        sampleEntitiesDrawn = true
+        console.info('[MXCAD demo] Drawing sample entities...')
+        try {
+          const database = mxcadInstance.getDatabase?.()
+          const currentSpace = database?.currentSpace
+          if (!currentSpace) {
+            console.warn('[MXCAD demo] currentSpace unavailable; skip demo entities')
+            return
+          }
+
+          const textStylePayload = ensureDefaultTextStyle(mxcadInstance)
+          const textStyleRecord = textStylePayload?.id?.getMcDbTextStyleTableRecord?.()
+          ensureDefaultDimStyle(mxcadInstance, textStylePayload, textStyleRecord)
+
+          const line = new McDbLine(
+            new McGePoint3d(0, 0, 0),
+            new McGePoint3d(800, 0, 0)
+          )
+          const lineId = currentSpace.appendAcDbEntity(line)
+          console.info('[MXCAD demo] Line entity id', lineId, 'isValid:', lineId?.isValid?.())
+
+          const poly = new McDbPolyline()
+          poly.addVertexAt(new McGePoint3d(0, 0, 0))
+          poly.addVertexAt(new McGePoint3d(800, 0, 0))
+          poly.addVertexAt(new McGePoint3d(800, 400, 0))
+          poly.addVertexAt(new McGePoint3d(0, 400, 0))
+          poly.isClosed = true
+          const polyId = currentSpace.appendAcDbEntity(poly)
+          console.info('[MXCAD demo] Polyline entity id', polyId, 'isValid:', polyId?.isValid?.())
+
+          const text = new McDbText()
+          text.textString = 'MXCAD Demo Entities'
+          text.height = 60
+          text.position = new McGePoint3d(40, 480, 0)
+          text.horizontalMode = McDb.TextHorzMode.kTextLeft
+          text.alignmentPoint = text.position
+          const textId = currentSpace.appendAcDbEntity(text)
+          console.info('[MXCAD demo] Text entity id', textId, 'isValid:', textId?.isValid?.())
+
+          console.info('[MXCAD demo] Sample geometry added successfully.')
+        } catch (error) {
+          console.warn('[MXCAD demo] drawSampleEntities failed', error)
+        }
+      }
+
+      const handleInstanceReady = (instance, label) => {
+        if (instance) {
+          cachedMxCad = instance
+          const ensured = ensureDefaultTextStyle(instance)
+          const sysStyle =
+            instance.getSysVarString?.('TEXTSTYLE') || instance.getDatabase?.()?.getSysVarString?.('TEXTSTYLE')
+          console.info('[MXCAD demo] TEXTSTYLE after init', { sysStyle, ensured })
+          drawSampleEntities(instance)
+        }
+        console.log(`[MXCAD demo] ${label}`, instance)
+      }
+
+      const initMxCad = () => {
+        console.log('[MXCAD demo] createMxCad() invoked (blank document)')
+        try {
+          const maybePromise = createMxCad({
+            canvas: '#myCanvas',
+            locateFile: (fileName) => 'https://unpkg.com/mxcad/dist/wasm/2d-st/' + fileName,
+            fontspath: './fonts/',
+            viewBackgroundColor: [255, 255, 255],
+            onOpenFileComplete: (...args) => {
+              console.info('[MXCAD demo] onOpenFileComplete fired', args)
+              const instance = args.find((item) => item && typeof item === 'object' && typeof item.drawEntity === 'function')
+              if (instance) {
+                handleInstanceReady(instance, 'onOpenFileComplete instance')
+              } else {
+                console.info('[MXCAD demo] onOpenFileComplete: instance not resolved yet')
+              }
+            },
+            onOpenFileError: (err) => {
+              console.warn('[MXCAD demo] onOpenFileError', err)
+            },
+          })
+          Promise.resolve(maybePromise)
+            .then((instance) => handleInstanceReady(instance, 'createMxCad resolved'))
+            .catch((err) => {
+              console.error('[MXCAD demo] createMxCad promise rejected', err)
+            })
+        } catch (err) {
+          console.error('[MXCAD demo] createMxCad threw synchronously', err)
+        }
+      }
+
+      initMxCad()
+    }
+  </script>
+
+  <div class="info">
+    注意事项：
+    <ul>
+      <li>本演示使用单线程 wasm 构建 (<code>2d-st</code>)，无需特殊的 COOP/COEP 请求头。</li>
+      <li>请将图纸引用的 SHX/TTF 字体文件放入 <code>./fonts</code> 目录（参见 <code>fonts/README.txt</code>）。</li>
+      <li>如果画布显示空白，请尝试通过本地服务器访问，而不是直接以 <code>file://</code> 方式打开。</li>
+      <li>如需加载现有图纸，请添加指向 <code>.mxweb</code> 文件的 <code>fileUrl</code> 参数。</li>
+    </ul>
+  </div>
+</body>
+
+</html>

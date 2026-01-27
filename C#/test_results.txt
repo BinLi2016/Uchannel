@@ -1,0 +1,31 @@
+  姝ｅ湪纭畾瑕佽繕鍘熺殑椤圭洰鈥?
+  鎵€鏈夐」鐩潎鏄渶鏂扮殑锛屾棤娉曡繕鍘熴€?
+  UChannelDesignApp -> H:\U褰㈡Ы閰嶇瓔杞欢\C#\UChannelDesignApp\bin\Debug\net9.0\UChannelDesignApp.dll
+  UChannelDesignApp.Tests -> H:\U褰㈡Ы閰嶇瓔杞欢\C#\UChannelDesignApp.Tests\bin\Debug\net9.0\UChannelDesignApp.Tests.dll
+H:\U褰㈡Ы閰嶇瓔杞欢\C#\UChannelDesignApp.Tests\bin\Debug\net9.0\UChannelDesignApp.Tests.dll (.NETCoreApp,Version=v9.0)鐨勬祴璇曡繍琛?
+VSTest 鐗堟湰 17.14.1 (x64)
+
+姝ｅ湪鍚姩娴嬭瘯鎵ц锛岃绋嶅€?..
+鎬诲叡 1 涓祴璇曟枃浠朵笌鎸囧畾妯″紡鐩稿尮閰嶃€?
+[xUnit.net 00:00:00.08]     UChannelDesignApp.Tests.StructuralEngineTests.Verify_YU1_ReturnsReasonableValues [FAIL]
+[xUnit.net 00:00:00.08]     UChannelDesignApp.Tests.StructuralEngineTests.CalculateCoulombKa_StandardValues_ReturnsExpected [FAIL]
+  澶辫触 UChannelDesignApp.Tests.StructuralEngineTests.Verify_YU1_ReturnsReasonableValues [6 ms]
+  閿欒娑堟伅:
+   Assert.Equal() Failure: Values are not within 1 decimal place
+Expected: 42.799999999999997 (rounded from 42.75)
+Actual:   42.600000000000001 (rounded from 42.612307904821726)
+  鍫嗘爤璺熻釜:
+     at UChannelDesignApp.Tests.StructuralEngineTests.Verify_YU1_ReturnsReasonableValues() in H:\U褰㈡Ы閰嶇瓔杞欢\C#\UChannelDesignApp.Tests\StructuralEngineTests.cs:line 38
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  澶辫触 UChannelDesignApp.Tests.StructuralEngineTests.CalculateCoulombKa_StandardValues_ReturnsExpected [< 1 ms]
+  閿欒娑堟伅:
+   Assert.Equal() Failure: Values are not within 4 decimal places
+Expected: 0.39860000000000001 (rounded from 0.39860000000000001)
+Actual:   0.39729999999999999 (rounded from 0.3973179376890108)
+  鍫嗘爤璺熻釜:
+     at UChannelDesignApp.Tests.StructuralEngineTests.CalculateCoulombKa_StandardValues_ReturnsExpected() in H:\U褰㈡Ы閰嶇瓔杞欢\C#\UChannelDesignApp.Tests\StructuralEngineTests.cs:line 16
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+澶辫触!  - 澶辫触:     2锛岄€氳繃:     1锛屽凡璺宠繃:     0锛屾€昏:     3锛屾寔缁椂闂? 12 ms - UChannelDesignApp.Tests.dll (net9.0)

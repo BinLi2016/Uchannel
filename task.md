@@ -1,0 +1,24 @@
+# Task: Architecture Design & Implementation Plan for U-Channel Design Software
+
+- [x] Architectural Selection (Option B) [x]
+    - [x] Draft architecture options
+    - [x] Get user approval for Option B (Native WPF + WebView2)
+- [x] TDD Framework & Core Logic [x]
+    - [x] Create `UChannelDesignApp.Tests` xUnit project
+    - [x] Write tests for Coordinate Logic (YU1 expected points)
+    - [x] Implement `CoordinateEngine.cs` to satisfy tests
+    - [x] Write tests for Structural Logic (Excel benchmark comparison)
+    - [x] Refine `StructuralEngine.cs` to satisfy tests
+- [x] UI & WebView2 Development [x]
+    - [x] Initialize WPF project and install `Microsoft.Web.WebView2`
+    - [x] Bridge C# to JS: `webView.ExecuteScriptAsync`
+    - [x] Implement `drawUChannel.js` using MXCAD API
+- [x] Verification & Demo
+    - [x] Generate real-time drawing in WPF for YU1
+    - [x] Export `.mxweb` or PDF verification
+    - [x] Implement drawing of U-Channel Parameter Table 1 (MXCAD)
+- [x] Advanced Drawing Components
+    - [x] Implement drawing of U-Channel Reinforcement Quantity Table 2
+    - [x] Implement drawing of U-Channel Reinforcement Quantity Table 3
+    - [x] Implement drawing of U-Channel Reinforcement Layout Sheet (cross-section + callouts + tables)
+    - [x] Wire layout-sheet drawing trigger from WPF (button -> WebView2 ExecuteScriptAsync)
