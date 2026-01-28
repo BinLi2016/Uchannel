@@ -185,7 +185,7 @@ class PCADParser:
         return i
     
     def _parse_layers(self, start_idx: int) -> int:
-        """解析 layers 块"""
+        """解析 layers 块 (支持 color() 和 #hex 语法)"""
         i = start_idx
         i += 1  # Skip 'layers {'
         while i < len(self.lines):
@@ -196,19 +196,34 @@ class PCADParser:
             if line == '}':
                 break
             
-            # outline: color(0, 255, 255) lineweight(0.25);
-            # hatch:   color(180, 180, 180) lineweight(0.10) pattern(ANSI37);
-            # Try to match with or without pattern
-            match = re.search(r'(\w+):\s*color\((\d+),\s*(\d+),\s*(\d+)\)\s*lineweight\(([\d.]+)\)', line)
-            if match:
-                layer_name = match.group(1)
-                r, g, b = int(match.group(2)), int(match.group(3)), int(match.group(4))
-                lw = float(match.group(5))
+            # Try Approach 1: name: #hex, weight; (Found in RebarDetails_2.pcad)
+            hex_match = re.search(r'(\w+)[:=]\s*#([0-9a-fA-F]{6})[,\s]+([\d.]+)', line)
+            if hex_match:
+                layer_name = hex_match.group(1)
+                hex_color = hex_match.group(2)
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                lw = float(hex_match.group(3))
                 self.layers[layer_name] = {'color': (r, g, b), 'lineweight': lw}
+                print(f"DEBUG: Found layer (hex): {layer_name} = RGB({r},{g},{b}) LW={lw}")
+                i += 1
+                continue
+
+            # Try Approach 2: name: color(r,g,b) lineweight(lw);
+            rgb_match = re.search(r'(\w+)[:=]\s*color\((\d+),\s*(\d+),\s*(\d+)\)\s*lineweight\(([\d.]+)\)', line)
+            if rgb_match:
+                layer_name = rgb_match.group(1)
+                r, g, b = int(rgb_match.group(2)), int(rgb_match.group(3)), int(rgb_match.group(4))
+                lw = float(rgb_match.group(5))
+                self.layers[layer_name] = {'color': (r, g, b), 'lineweight': lw}
+                print(f"DEBUG: Found layer (color): {layer_name} = RGB({r},{g},{b}) LW={lw}")
+                i += 1
+                continue
             
             i += 1
-        
         return i
+
     
     def _parse_hatch_style(self, start_idx: int) -> int:
         """解析 hatch_style 块"""
@@ -1158,6 +1173,9 @@ class AutoLISPGenerator:
         # Generate barshapes
         self._generate_barshapes()
         
+        # Generate utility functions
+        self._generate_utility_functions()
+        
         # Generate tables
         self._generate_tables()
         
@@ -1189,6 +1207,27 @@ class AutoLISPGenerator:
         if expr.startswith('table('):
             # table(TableName, key) -> (get-table-row "TableName" key)
             return f"; Table accessor not fully implemented: {expr}"
+
+        # Handle math functions: sin(), cos(), tan(), sqrt(), abs(), pow()
+        math_funcs = ['sin', 'cos', 'tan', 'sqrt', 'abs']
+        for func in math_funcs:
+            if expr.startswith(f'{func}(') and expr.endswith(')'):
+                inner = expr[len(func)+1:-1]
+                lisp_inner = self._convert_expr_to_lisp(inner)
+                # AutoLISP uses (sin x) for radians, but P-CAD uses degrees
+                # Convert degrees to radians for trig functions
+                if func in ['sin', 'cos', 'tan']:
+                    return f"({func} (* {lisp_inner} (/ pi 180.0)))"
+                return f"({func} {lisp_inner})"
+        
+        # Handle pow(base, exp)
+        if expr.startswith('pow(') and expr.endswith(')'):
+            inner = expr[4:-1]
+            parts = inner.split(',')
+            if len(parts) == 2:
+                base = self._convert_expr_to_lisp(parts[0].strip())
+                exp = self._convert_expr_to_lisp(parts[1].strip())
+                return f"(expt {base} {exp})"
 
         # Handle simple variable reference
         if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', expr):
@@ -1267,33 +1306,46 @@ class AutoLISPGenerator:
         """生成图层设置代码"""
         self.code.append("  ; Setup layers")
         
+        # Ensure standard layers exist if not declared in PCAD
+        standard_layers = {
+            'outline': {'color': (0, 255, 255), 'lineweight': 0.25},
+            'rebar': {'color': (255, 0, 0), 'lineweight': 0.20},
+            'text': {'color': (0, 255, 0), 'lineweight': 0.18},
+            'dim': {'color': (0, 255, 255), 'lineweight': 0.18},
+            'hatch': {'color': (180, 180, 180), 'lineweight': 0.10}
+        }
+        for name, info in standard_layers.items():
+            if name not in self.parser.layers:
+                self.parser.layers[name] = info
+        
         # RGB to ACI (AutoCAD Color Index) conversion
         def rgb_to_aci(r, g, b):
-            # Simplified: use color index based on RGB
-            if r == 0 and g == 255 and b == 255:  # Cyan
-                return 4
-            elif r == 180 and g == 180 and b == 180:  # Gray
-                return 8
-            elif r == 0 and g == 255 and b == 0:  # Green
-                return 3
-            elif r == 255 and g == 0 and b == 0:  # Red
-                return 1
-            else:
-                return 7  # White
+            # Better mapping based on color components
+            if r > 200 and g < 50 and b < 50: return 1  # Red
+            if r > 200 and g > 200 and b < 50: return 2  # Yellow
+            if r < 50 and g > 200 and b < 50: return 3  # Green
+            if r < 50 and g > 200 and b > 200: return 4  # Cyan
+            if r < 50 and g < 50 and b > 200: return 5  # Blue
+            if r > 200 and g < 50 and b > 200: return 6  # Magenta
+            if r > 200 and g > 200 and b > 200: return 7  # White
+            if abs(r-g) < 30 and abs(g-b) < 30 and r > 100 and r < 200: return 8  # Gray
+            return 7  # Default white
         
         for layer_name, layer_info in self.parser.layers.items():
             color = layer_info['color']
             lw = layer_info['lineweight']
             aci = rgb_to_aci(color[0], color[1], color[2])
-            self.code.append(f"  (command \"._LAYER\" \"_M\" \"{layer_name}\" \"_C\" \"{aci}\" \"\" \"_LW\" \"{lw}\" \"\" \"\")")
+            # Use a single combined LAYER command for robustness
+            self.code.append(f"  (command \"._-LAYER\" \"_M\" \"{layer_name}\" \"_C\" \"{aci}\" \"\" \"_LW\" \"{lw}\" \"\" \"\")")
         
         self.code.append("")
+
     
     def _generate_sketches(self):
         """生成 sketch (polyline) 代码"""
         for sketch in self.parser.sketches:
             self.code.append(f"  ; Sketch: {sketch['name']}")
-            self.code.append(f"  (command \"._LAYER\" \"_S\" \"{sketch['layer']}\" \"\")")
+            self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{sketch['layer']}\" \"\")")
             
             polyline = sketch['polyline']
             # Generate PLINE command
@@ -1383,7 +1435,7 @@ class AutoLISPGenerator:
             sketch = next((s for s in self.parser.sketches if s['name'] == sketch_name), None)
             
             if sketch:
-                self.code.append(f"  (command \"._LAYER\" \"_S\" \"hatch\" \"\")")
+                self.code.append(f"  (command \"._-LAYER\" \"_S\" \"hatch\" \"\")")
                 
                 # Get hatch style
                 hatch_style_name = region.get('hatch', 'concrete')
@@ -1426,7 +1478,7 @@ class AutoLISPGenerator:
             to_x, to_y = self._parse_point_expr(to_expr)
             
             self.code.append(f"  ; Dimension: {text}")
-            self.code.append(f"  (command \"._LAYER\" \"_S\" \"dim\" \"\")")
+            self.code.append(f"  (command \"._-LAYER\" \"_S\" \"dim\" \"\")")
             
             if dim_type == 'linear':
                 # Calculate dimension line position (offset below)
@@ -1440,13 +1492,14 @@ class AutoLISPGenerator:
             self.code.append("")
     
     def _generate_barshapes(self):
-        """生成钢筋大样代码 - generates AutoLISP functions to draw bar shapes"""
+        """生成钢筋大样代码 - generates AutoLISP functions to draw bar shapes with scaling support"""
         if not self.parser.barshapes:
             return
         
         self.code.append("  ; Bar shapes (rebar detail drawings)")
-        self.code.append("  ; Each barshape generates a function: (draw-barshape-<Name> base_pt)")
-        self.code.append("  ; base_pt is a list (x y z), parameters are taken from global variables")
+        self.code.append("  ; Each barshape generates a function: (draw-barshape-<Name> base_pt scale)")
+        self.code.append("  ; base_pt is a list (x y z), scale is a number (1.0 = full size)")
+        self.code.append("  ; For table cells, use scale 0.05-0.1 to fit shapes in cells")
         self.code.append("")
         
         # Generate a drawing function for each barshape
@@ -1465,25 +1518,58 @@ class AutoLISPGenerator:
                 
                 if points:
                     self.code.append(f"  ; Dims: {dims}")
-                    self.code.append(f"  (defun draw-barshape-{name} (base_pt / pt x y)")
+                    # Function with local scale variable (set to default)
+                    self.code.append(f"  (defun draw-barshape-{name} (base_pt / pt x y sc)")
+                    self.code.append("    (setq sc 0.05)  ; Scale: 0.05 = fit ~1000mm shapes in ~50mm cells")
+
                     # Switch to rebar layer
-                    self.code.append(f"    (command \"._LAYER\" \"_S\" \"rebar\" \"\")")
+                    self.code.append(f"    (command \"._-LAYER\" \"_S\" \"rebar\" \"\")")
                     self.code.append(f"    (command \"._PLINE\")")
                     
                     for pt in points:
                         x_expr = self._convert_expr_to_lisp(pt[0])
                         y_expr = self._convert_expr_to_lisp(pt[1])
-                        # Calculate absolute point: base_x + x, base_y + y
-                        # Use setq to calculate intermediate values for clarity/debugging
-                        self.code.append(f"    (setq x (+ (car base_pt) {x_expr}))")
-                        self.code.append(f"    (setq y (+ (cadr base_pt) {y_expr}))")
+                        # Apply scale to coordinates relative to base point
+                        self.code.append(f"    (setq x (+ (car base_pt) (* sc {x_expr})))")
+                        self.code.append(f"    (setq y (+ (cadr base_pt) (* sc {y_expr})))")
                         self.code.append(f"    (command (list x y))")
                     
                     self.code.append(f"    (command \"\")")
                     
-                    # TODO: Implement hook drawing logic
+                    # Implement hook drawing logic (P-CAD v1.1 normative)
                     if hooks:
-                        self.code.append(f"    ; Note: Hooks not yet visualized: {hooks}")
+                        self.code.append(f"    ; Drawing hooks for {name}")
+                        # Get last segment end point for end hook
+                        if len(points) >= 2:
+                            # End hook: based on direction from second-to-last to last point
+                            if 'end' in hooks:
+                                end_hook = hooks['end']
+                                angle = end_hook.get('angle', '90')
+                                length = end_hook.get('length', '50')
+                                angle_lisp = self._convert_expr_to_lisp(angle)
+                                length_lisp = self._convert_expr_to_lisp(length)
+                                self.code.append(f"    ; End hook: angle={angle}, length={length}")
+                                self.code.append(f"    (setq hook_angle (+ (angle (list 0 0) (list x y)) (* {angle_lisp} (/ pi 180.0))))")
+                                self.code.append(f"    (setq hook_end_x (+ x (* sc {length_lisp} (cos hook_angle))))")
+                                self.code.append(f"    (setq hook_end_y (+ y (* sc {length_lisp} (sin hook_angle))))")
+                                self.code.append(f"    (command \"._LINE\" (list x y) (list hook_end_x hook_end_y) \"\")")
+                            # Start hook
+                            if 'start' in hooks:
+                                start_hook = hooks['start']
+                                angle = start_hook.get('angle', '90')
+                                length = start_hook.get('length', '50')
+                                angle_lisp = self._convert_expr_to_lisp(angle)
+                                length_lisp = self._convert_expr_to_lisp(length)
+                                first_pt = points[0]
+                                fx_expr = self._convert_expr_to_lisp(first_pt[0])
+                                fy_expr = self._convert_expr_to_lisp(first_pt[1])
+                                self.code.append(f"    ; Start hook: angle={angle}, length={length}")
+                                self.code.append(f"    (setq fx (+ (car base_pt) (* sc {fx_expr})))")
+                                self.code.append(f"    (setq fy (+ (cadr base_pt) (* sc {fy_expr})))")
+                                self.code.append(f"    (setq hook_angle (+ (angle (list 0 0) (list fx fy)) (* {angle_lisp} (/ pi 180.0))))")
+                                self.code.append(f"    (setq hook_start_x (+ fx (* sc {length_lisp} (cos hook_angle))))")
+                                self.code.append(f"    (setq hook_start_y (+ fy (* sc {length_lisp} (sin hook_angle))))")
+                                self.code.append(f"    (command \"._LINE\" (list fx fy) (list hook_start_x hook_start_y) \"\")")
                     
                     self.code.append(f"  )")
             else:
@@ -1492,7 +1578,29 @@ class AutoLISPGenerator:
             self.code.append("")
         
         self.code.append("")
-    
+
+
+    def _generate_utility_functions(self):
+        """生成渲染所需的通用 AutoLISP 函数"""
+        self.code.append("  ; --- Utility Functions for Rendering ---")
+        self.code.append("  (defun draw-table-cell (pt w h txt / p1 p2 p3 p4 cp)")
+        self.code.append("    (setq p1 pt")
+        self.code.append("          p2 (list (+ (car pt) w) (cadr pt) 0.0)")
+        self.code.append("          p3 (list (+ (car pt) w) (- (cadr pt) h) 0.0)")
+        self.code.append("          p4 (list (car pt) (- (cadr pt) h) 0.0)")
+        self.code.append("          cp (list (+ (car pt) (* 0.5 w)) (- (cadr pt) (* 0.5 h)) 0.0)")
+        self.code.append("    )")
+        self.code.append("    (command \"._-LAYER\" \"_S\" \"outline\" \"\")")
+        self.code.append("    (command \"._PLINE\" p1 p2 p3 p4 \"_C\")")
+        self.code.append("    (if (and txt (/= txt \"\"))")
+        self.code.append("      (progn")
+        self.code.append("        (command \"._-LAYER\" \"_S\" \"text\" \"\")")
+        self.code.append("        (command \"._MTEXT\" cp \"_J\" \"_MC\" \"_W\" (* 0.9 w) txt \"\")")
+        self.code.append("      )")
+        self.code.append("    )")
+        self.code.append("  )")
+        self.code.append("")
+
     def _parse_segments_to_points(self, segments_str: str) -> list:
         """Parse segment string like '(x1, y1) -> (x2, y2) -> ...' into list of point tuples"""
         points = []
@@ -1515,7 +1623,7 @@ class AutoLISPGenerator:
         if not self.parser.tables:
             return
         
-        self.code.append("  ; Tables - Generate data structures for table rendering")
+        self.code.append("  ; Tables - Generate data structures and drawing functions")
         
         for name, table in self.parser.tables.items():
             table_type = table.get('type', 'schedule')
@@ -1523,7 +1631,6 @@ class AutoLISPGenerator:
             rows = table.get('rows', [])
             
             self.code.append(f"  ; --- Table: {name} ---")
-            self.code.append(f"  ; Type: {table_type}, Columns: {len(columns)}, Rows: {len(rows)}")
             
             # Generate column names list
             col_names = list(columns.keys())
@@ -1540,11 +1647,55 @@ class AutoLISPGenerator:
                     # Escape quotes in value
                     val = str(val).replace('"', '\\"')
                     row_values.append(f'"{val}"')
-                self.code.append(f"    ({' '.join(row_values)})  ; Row {i+1}")
+                self.code.append(f"    ({' '.join(row_values)})")
             self.code.append("  ))")
             
             # Generate a helper function to draw this table
-            self.code.append(f"  ; To draw: (draw-table-{name} base_x base_y cell_width cell_height)")
+            self.code.append(f"  (defun draw-table-{name} (ins_pt cell_w cell_h / x y col_idx row_data val cell_pt shape_func shape_pt)")
+            self.code.append("    (setq x (car ins_pt) y (cadr ins_pt))")
+            
+            # Header
+            self.code.append("    (setq col_idx 0)")
+            self.code.append(f"    (foreach col_name table_{name}_cols")
+            self.code.append("      (setq cell_pt (list (+ x (* col_idx cell_w)) y 0.0))")
+            self.code.append("      (draw-table-cell cell_pt cell_w cell_h col_name)")
+            self.code.append("      (setq col_idx (1+ col_idx))")
+            self.code.append("    )")
+            self.code.append("    (setq y (- y cell_h))")
+            
+            # Data Rows
+            barshape_cols = [idx for idx, (c_name, c_type) in enumerate(columns.items()) if 'barshape_ref' in c_type]
+            
+            self.code.append(f"    (foreach row_data table_{name}_data")
+            self.code.append("      (setq col_idx 0)")
+            self.code.append("      (foreach val row_data")
+            self.code.append("        (setq cell_pt (list (+ x (* col_idx cell_w)) y 0.0))")
+            
+            if barshape_cols:
+                col_list_str = ' '.join(map(str, barshape_cols))
+                self.code.append(f"        (if (member col_idx '({col_list_str}))")
+                self.code.append("          (progn")
+                self.code.append("            (draw-table-cell cell_pt cell_w cell_h \"\")")
+                self.code.append("            (setq shape_func (read (strcat \"draw-barshape-\" val)))")
+                self.code.append("            (if (and val (/= val \"\"))")
+                self.code.append("              (progn")
+                self.code.append("                (setq shape_pt (list (+ (car cell_pt) (* 0.5 cell_w)) (- (cadr cell_pt) (* 0.5 cell_h)) 0.0))")
+                self.code.append("                (eval (list shape_func (list 'quote shape_pt)))")
+
+                self.code.append("              )")
+                self.code.append("            )")
+
+                self.code.append("          )")
+                self.code.append("          (draw-table-cell cell_pt cell_w cell_h val)")
+                self.code.append("        )")
+            else:
+                self.code.append("        (draw-table-cell cell_pt cell_w cell_h val)")
+                
+            self.code.append("        (setq col_idx (1+ col_idx))")
+            self.code.append("      )")
+            self.code.append("      (setq y (- y cell_h))")
+            self.code.append("    )")
+            self.code.append("  )")
             self.code.append("")
         
         self.code.append("")
@@ -1594,14 +1745,28 @@ class AutoLISPGenerator:
                 self.code.append(f"  (setq sheet_{name}_title \"{title}\")")
                 self.code.append(f"  (setq sheet_{name}_date \"{date}\")")
             
-            # Placements - reference what should be placed on this sheet
+            # Placements execution
             placements = sheet.get('placements', [])
             if placements:
-                self.code.append(f"  ; Placements for {name}:")
+                self.code.append(f"  ; Render placements for {name}")
+                # Default cell dimensions for tables (larger for barshape columns)
+                cell_w = 80.0   # Increased from 40 to accommodate scaled barshapes
+                cell_h = 60.0   # Increased from 10 to accommodate scaled barshapes
+                current_y = 0.0
+
+                
                 for p in placements:
                     ptype = p.get('type')
                     pname = p.get('name')
-                    self.code.append(f"  ;   - {ptype}: {pname}")
+                    if ptype == 'table':
+                        self.code.append(f"  (draw-table-{pname} (list 0.0 {current_y} 0.0) {cell_w} {cell_h})")
+                        # Move down for next placement if any
+                        table_obj = self.parser.tables.get(pname, {})
+                        rows_count = len(table_obj.get('rows', [])) + 1 # +1 for header
+                        current_y -= (rows_count * cell_h + 20.0) # Gap of 20
+                    elif ptype == 'view':
+                        # TODO: Implement view rendering (sketches inside views)
+                        self.code.append(f"  ; (View placement {pname} not fully implemented)")
             
             self.code.append("")
         
@@ -1721,3 +1886,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

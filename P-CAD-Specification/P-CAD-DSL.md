@@ -10,9 +10,8 @@ or a design document for a CAD automation system.
 The specification is organized so that Level A (2D-only) is fully normative, while Level B+ are explicitly extensible but optional.
 
 P-CAD
-
 Parametric CAD Description Language
-Language Specification v1.0 (Level A – 2D Parametric Drawings)
+Language Specification v1.1 (Level A – 2D Parametric Drawings)
 
 1. Scope and Design Objectives
 1.1 Purpose
@@ -119,8 +118,10 @@ Example:
 
 inner_b = b - 2*cover;
 
-
-No trigonometric or conditional expressions in Level A.
+Level A Expressions support:
+- Arithmetic: `+`, `-`, `*`, `/`
+- Math functions: `sin()`, `cos()`, `tan()`, `sqrt()`, `abs()`, `pow(base, exp)`
+- Parentheses for grouping
 
 5. Coordinate System
 
@@ -137,12 +138,12 @@ Each view may apply translation and scale.
 
 6. Layers and Styles
 layers {
-  outline: color(0,255,255) lineweight(0.25);
-  rebar:   color(255,0,0)   lineweight(0.20);
-  mesh:    color(255,0,0)   lineweight(0.18);
-  hatch:   color(180,180,180) lineweight(0.10) pattern(ANSI37);
-  dim:     color(0,255,255) lineweight(0.18);
-  text:    color(0,255,0)   lineweight(0.18);
+  outline = color(0,255,255) lineweight(0.25);
+  rebar   = color(255,0,0)   lineweight(0.20);
+  mesh    = color(255,0,0)   lineweight(0.18);
+  hatch   = color(180,180,180) lineweight(0.10) pattern(ANSI37);
+  dim     = color(0,255,255) lineweight(0.18);
+  text    = color(0,255,0)   lineweight(0.18);
 }
 
 6.1 Layer Semantics
@@ -241,7 +242,7 @@ Trimmed to region
 Label is semantic (used for callouts)
 
 9.3 Bars (Linear reinforcement)
-bars BaseBars layer=rebar {
+bars BaseBars layer = rebar {
   set = N12;
   path = line(cover,cover) -> line(L2-cover,cover);
   count = 2;
@@ -424,11 +425,11 @@ table Name {
   key = <column_name>;
 
   columns {
-    <col_name>: <col_type> [unit=<unit>] [computed];
+    <col_name> = <col_type> [unit=<unit>] [computed];
     ...
   }
 
-  row <RowKey>? { <col_name>=<expr>; ... }
+  row <RowKey>? { <col_name> = <expr>; ... }
 
   compute {
     <col_name> = <expr>;
@@ -503,6 +504,13 @@ Unit rules:
 - `HRB400-Φ12` => dia=12, grade=HRB400
 
 If grade is unknown, predicates comparing `.grade` must evaluate to false (not error).
+
+18.7 Table Rendering: Barshape Reference (Normative)
+When a column is of type `barshape_ref`, the cell rendering must:
+- Create a local coordinate system at the cell center.
+- Scale the `barshape` geometry to fit within 80% of the cell height and width.
+- Maintain the aspect ratio of the `barshape`.
+- Center the geometry within the cell.
 
 18.4 Example: Parameter Lookup Table
 
@@ -620,6 +628,13 @@ barshape Name {
   }
 }
 
+19.3 Hook Geometry (Normative)
+A `hook(angle, length)` at a segment end (P1 -> P2) adds a new segment (P2 -> P3):
+- The angle is relative to the segment direction.
+- For start hooks, the angle is measured from the (P2 -> P1) vector.
+- For end hooks, the angle is measured from the (P1 -> P2) vector.
+- Length is the scalar distance from P2 to P3.
+
 Example:
 
 barshape S1 {
@@ -639,8 +654,8 @@ barshape S3 {
   segments = [ (0,0) -> (a,0) -> (a,b) -> (0,b) -> (0,0) ];
   bend_radius = [r, r, r, r];
   hooks {
-    start = hook(angle=135, length=50);
-    end   = hook(angle=135, length=50);
+    start = hook(angle = 135, length = 50);
+    end   = hook(angle = 135, length = 50);
   }
   dims { a = 120; b = 200; r = 8; }
 }

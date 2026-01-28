@@ -152,7 +152,19 @@
     (setq y (+ (cadr base_pt) 0))
     (command (list x y))
     (command "")
-    ; Note: Hooks not yet visualized: {'start': {'angle': '135', 'length': '16.5'}, 'end': {'angle': '135', 'length': '16.5'}}
+    ; Drawing hooks for N7
+    ; End hook: angle=135, length=16.5
+    (setq hook_angle (+ (angle (list 0 0) (list x y)) (* 135 (/ pi 180.0))))
+    (setq hook_end_x (+ x (* 16.5 (cos hook_angle))))
+    (setq hook_end_y (+ y (* 16.5 (sin hook_angle))))
+    (command "._LINE" (list x y) (list hook_end_x hook_end_y) "")
+    ; Start hook: angle=135, length=16.5
+    (setq fx (+ (car base_pt) 0))
+    (setq fy (+ (cadr base_pt) 0))
+    (setq hook_angle (+ (angle (list 0 0) (list fx fy)) (* 135 (/ pi 180.0))))
+    (setq hook_start_x (+ fx (* 16.5 (cos hook_angle))))
+    (setq hook_start_y (+ fy (* 16.5 (sin hook_angle))))
+    (command "._LINE" (list fx fy) (list hook_start_x hook_start_y) "")
   )
 
   ; --- Barshape: N8 (type: custom) ---
@@ -202,23 +214,70 @@
   )
 
 
-  ; Tables - Generate data structures for table rendering
+  ; --- Utility Functions for Rendering ---
+  (defun draw-table-cell (pt w h txt / p1 p2 p3 p4 cp)
+    (setq p1 pt
+          p2 (list (+ (car pt) w) (cadr pt) 0.0)
+          p3 (list (+ (car pt) w) (- (cadr pt) h) 0.0)
+          p4 (list (car pt) (- (cadr pt) h) 0.0)
+          cp (list (+ (car pt) (* 0.5 w)) (- (cadr pt) (* 0.5 h)) 0.0)
+    )
+    (command "._LAYER" "_S" "outline" "")
+    (command "._PLINE" p1 p2 p3 p4 "_C")
+    (if (and txt (/= txt ""))
+      (progn
+        (command "._LAYER" "_S" "text" "")
+        (command "._MTEXT" cp "_J" "_MC" "_W" (* 0.9 w) txt "")
+      )
+    )
+  )
+
+  ; Tables - Generate data structures and drawing functions
   ; --- Table: RebarDetailsTable ---
-  ; Type: schedule, Columns: 4, Rows: 10
   (setq table_RebarDetailsTable_cols '("编号" "规格" "大样" "备注"))
   (setq table_RebarDetailsTable_data '(
-    ("N1" "Φ16" "N1_N2" "Straight with hooks")  ; Row 1
-    ("N2" "Φ16" "N1_N2" "Straight with hooks")  ; Row 2
-    ("N3" "Φ16" "N3_N4" "U-bend")  ; Row 3
-    ("N4" "Φ16" "N3_N4" "U-bend")  ; Row 4
-    ("N5" "Φ20" "N5" "Large U-bend")  ; Row 5
-    ("N6" "Φ16" "N6" "U-bend")  ; Row 6
-    ("N7" "Φ16" "N7" "Stirrup 2d2-30 x L3-24")  ; Row 7
-    ("N8" "Φ12" "N8" "Trapezoidal")  ; Row 8
-    ("N9" "Φ12" "N9_N10" "Straight with hooks")  ; Row 9
-    ("N10" "Φ12" "N9_N10" "Straight with hooks")  ; Row 10
+    ("N1" "Φ16" "N1_N2" "Straight with hooks")
+    ("N2" "Φ16" "N1_N2" "Straight with hooks")
+    ("N3" "Φ16" "N3_N4" "U-bend")
+    ("N4" "Φ16" "N3_N4" "U-bend")
+    ("N5" "Φ20" "N5" "Large U-bend")
+    ("N6" "Φ16" "N6" "U-bend")
+    ("N7" "Φ16" "N7" "Stirrup 2d2-30 x L3-24")
+    ("N8" "Φ12" "N8" "Trapezoidal")
+    ("N9" "Φ12" "N9_N10" "Straight with hooks")
+    ("N10" "Φ12" "N9_N10" "Straight with hooks")
   ))
-  ; To draw: (draw-table-RebarDetailsTable base_x base_y cell_width cell_height)
+  (defun draw-table-RebarDetailsTable (ins_pt cell_w cell_h / x y col_idx row_data val cell_pt shape_func shape_pt)
+    (setq x (car ins_pt) y (cadr ins_pt))
+    (setq col_idx 0)
+    (foreach col_name table_RebarDetailsTable_cols
+      (setq cell_pt (list (+ x (* col_idx cell_w)) y 0.0))
+      (draw-table-cell cell_pt cell_w cell_h col_name)
+      (setq col_idx (1+ col_idx))
+    )
+    (setq y (- y cell_h))
+    (foreach row_data table_RebarDetailsTable_data
+      (setq col_idx 0)
+      (foreach val row_data
+        (setq cell_pt (list (+ x (* col_idx cell_w)) y 0.0))
+        (if (member col_idx '(2))
+          (progn
+            (draw-table-cell cell_pt cell_w cell_h "")
+            (setq shape_func (read (strcat "draw-barshape-" val)))
+            (if (and val (/= val "") (fboundp shape_func))
+              (progn
+                (setq shape_pt (list (+ (car cell_pt) (* 0.5 cell_w)) (- (cadr cell_pt) (* 0.5 cell_h)) 0.0))
+                (apply shape_func (list shape_pt))
+              )
+            )
+          )
+          (draw-table-cell cell_pt cell_w cell_h val)
+        )
+        (setq col_idx (1+ col_idx))
+      )
+      (setq y (- y cell_h))
+    )
+  )
 
 
   ; Sheets (layout setup)
@@ -228,8 +287,8 @@
   (setq sheet_RebarDetailsSheet_scale 1.0)
   (setq sheet_RebarDetailsSheet_title "Details of Rebars")
   (setq sheet_RebarDetailsSheet_date "2026.01")
-  ; Placements for RebarDetailsSheet:
-  ;   - table: RebarDetailsTable
+  ; Render placements for RebarDetailsSheet
+  (draw-table-RebarDetailsTable (list 0.0 0.0 0.0) 40.0 10.0)
 
 
   (setvar "CMDECHO" 1)
