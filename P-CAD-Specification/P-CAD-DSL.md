@@ -215,6 +215,100 @@ offset(polyline, offset) (non-closed allowed)
 
 No boolean unions in Level A.
 
+8.3 Arc Segments (Level A)
+
+Polylines and barshape segments support **filleted corners** using the `:r=<radius>` suffix.
+Points with this suffix represent **virtual intersection points** — where adjacent straight segments
+would meet if extended. The arc is computed as a tangent fillet trimming both segments.
+
+8.3.1 Fillet Radius Syntax
+
+```
+polyline Name closed {
+  (x1, y1):r=R1 -> (x2, y2):r=R2 -> (x3, y3) -> (x4, y4):r=R3;
+}
+```
+
+- `:r=<expr>` applies a fillet arc of radius `<expr>` at the virtual corner
+- Points without `:r=` are sharp corners (no arc)
+- The actual arc tangent points are calculated from adjacent segment geometry
+
+8.3.2 Example: Stadium Shape (Obround)
+
+```
+// Stadium: 770mm bounding box, 220mm height, 110mm corner radius
+// Straight sides: 550mm (770 - 2×110)
+params {
+  W = 770;    // total width including virtual corners
+  H = 220;
+  R = 110;    // fillet radius = H/2 for semicircular ends
+}
+
+sketch Stadium layer=outline {
+  polyline boundary closed {
+    (0, 0):r=R -> (W, 0):r=R -> (W, H):r=R -> (0, H):r=R;
+  }
+}
+```
+
+The virtual corner points `(0,0)`, `(770,0)`, etc. are where tangent lines would meet.
+With `R=110`, the actual polyline has semicircular arcs at each end.
+
+8.3.3 Example: S-Curve Profile
+
+```
+// Profile with different fillet radii at each corner
+params {
+  L1 = 520;
+  L2 = 2400;
+  H1 = 100;
+  H2 = 160;
+  R1 = 125;   // upper corner radius
+  R2 = 160;   // lower corner radius
+}
+
+sketch SectionProfile layer=outline {
+  polyline boundary {
+    (0, H1 + H2) -> (L1, H1 + H2):r=R1
+    -> (L1, 0):r=R2 -> (L1 + L2, 0)
+    -> (L1 + L2, H2);
+  }
+}
+```
+
+8.3.4 Barshape with Fillet Radii
+
+```
+barshape StadiumStirrup {
+  type = stirrup;
+  segments = [
+    (0, 0):r=R -> (W, 0):r=R -> (W, H):r=R -> (0, H):r=R
+  ];
+  dims { W = 770; H = 220; R = 110; }
+}
+```
+
+8.3.5 Geometry Semantics
+
+Given virtual intersection point P with adjacent segments S1 (incoming) and S2 (outgoing):
+
+1. Calculate tangent point T1 on S1 at distance R from P (along S1 direction)
+2. Calculate tangent point T2 on S2 at distance R from P (along S2 direction)
+3. The arc from T1 to T2 is tangent to both segments
+
+For a 90° corner with radius R, the tangent points are at distance R from P.
+For other angles θ, the tangent distance is `R * tan(θ/2)`.
+
+8.3.6 CAD Output Mapping
+
+| P-CAD | DXF/DWG |
+|-------|---------|
+| Point with `:r=R` | LWPOLYLINE vertex with bulge (group code 42) |
+| Bulge calculation | `bulge = tan(arc_sweep / 4)` |
+
+For a semicircle (180° sweep), bulge = ±1.0.
+For a quarter circle (90° sweep), bulge ≈ ±0.414.
+
 9. Reinforcement Model (Level A)
 9.1 Rebar Set
 rebar_set N6  { dia = 6;  }

@@ -12,6 +12,31 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 
+# =============================================================================
+# GLOBAL CONFIGURATION - Modify these values for easy customization
+# =============================================================================
+
+# Text Style Settings
+TEXT_FONT = "fsdb_e.shx,cadhzf.shx"  # SHX font with big font
+TEXT_WIDTH_FACTOR = 0.70              # Width factor for text
+
+# Text Heights (in drawing units, typically mm)
+LABEL_TEXT_HEIGHT = 40                # Height for label text
+TABLE_CELL_TEXT_HEIGHT = 40           # Height for table cell text
+DIM_TEXT_HEIGHT = 40                  # Height for dimension text (DIMTXT)
+DEFAULT_TEXT_SIZE = 40                # Default text size (TEXTSIZE)
+
+# Barshape Layout Text Heights
+LAYOUT_TITLE_TEXT_HEIGHT = 16         # Height for barshape layout titles
+LAYOUT_LABEL_TEXT_HEIGHT = 10         # Height for barshape layout labels
+LAYOUT_NOTE_TEXT_HEIGHT = 7           # Height for barshape layout notes
+ANNOTATION_TEXT_HEIGHT = 7            # Height for custom annotations
+
+# Dimension Settings
+DIM_SCALE = 25.0                      # Dimension scale (DIMSCALE)
+
+# =============================================================================
+
 
 class PCADParser:
     """简化的 P-CAD 解析器"""
@@ -283,12 +308,15 @@ class PCADParser:
         layer = match.group(2)
         i += 1
         polylines = []
+        lines = []
         while i < len(self.lines):
             line = re.sub(r'//.*$', '', self.lines[i]).strip()
             if not line:
                 i += 1
                 continue
             if line == '}': break
+            
+            # Polyline handling
             if 'polyline' in line:
                 m = re.search(r'polyline\s+(\w+)\s+(closed|open)', line)
                 if m:
@@ -308,8 +336,20 @@ class PCADParser:
                             points.append(p_match.group(1).strip())
                         i += 1
                     polylines.append({'name': polyline_name, 'closed': is_closed, 'points': points})
+            
+            # Line handling
+            elif 'line' in line:
+                # line Name (x1, y1) -> (x2, y2);
+                m = re.search(r'line\s+(\w+)\s+\(([^)]+)\)\s*->\s*\(([^)]+)\);', line)
+                if m:
+                    lines.append({
+                        'name': m.group(1),
+                        'p1': m.group(2).strip(),
+                        'p2': m.group(3).strip()
+                    })
+            
             i += 1
-        self.sketches.append({'name': sketch_name, 'layer': layer, 'polylines': polylines})
+        self.sketches.append({'name': sketch_name, 'layer': layer, 'polylines': polylines, 'lines': lines})
         return i
     
     def _parse_region(self, start_idx: int) -> int:
@@ -737,7 +777,7 @@ class PCADParser:
             except ValueError:
                 # Expression-based origin, store as strings
                 self.origin = (match.group(1).strip(), match.group(2).strip())
-        return start_idx
+        return start_idx + 1
     
     def _parse_drawing_info(self, start_idx: int) -> int:
         """解析 drawing_info { ... } 块"""
@@ -1001,7 +1041,7 @@ class PCADParser:
             self.labels.append(label)
             print(f"DEBUG: Found label: {label['text']}")
         
-        return start_idx
+        return start_idx + 1
     
     def _parse_callout(self, start_idx: int) -> int:
         """解析 callout Name { ... } 块"""
@@ -1305,6 +1345,9 @@ class AutoLISPGenerator:
         self.code.append("; =========================================")
         self.code.append("(defun c:PCAD_Render ()")
         self.code.append("  (setvar \"CMDECHO\" 0)")
+        self.code.append(f"  (setvar \"DIMSCALE\" {DIM_SCALE})")
+        self.code.append(f"  (setvar \"DIMTXT\" {DIM_TEXT_HEIGHT})")
+        self.code.append(f"  (setvar \"TEXTSIZE\" {DEFAULT_TEXT_SIZE})")
         self.code.append("")
         
         # Check if parameters are set, use defaults if not
@@ -1349,6 +1392,11 @@ class AutoLISPGenerator:
         # Setup layers
         self._generate_layers()
         
+        # Setup text style for all text entities (dimensions, labels, tables, etc.)
+        self.code.append(f"  ; Setup text style: {TEXT_FONT}, width factor {TEXT_WIDTH_FACTOR}")
+        self.code.append(f"  (command \"._-STYLE\" \"Standard\" \"{TEXT_FONT}\" 0 {TEXT_WIDTH_FACTOR} 0 \"_N\" \"_N\" \"\")")
+        self.code.append("")
+        
         # Generate sketches (polylines)
         self._generate_sketches()
         
@@ -1375,6 +1423,9 @@ class AutoLISPGenerator:
         
         # Generate barshape layouts (freeform placement)
         self._generate_barshape_layouts()
+        
+        # Generate labels
+        self._generate_labels()
         
         self.code.append("  (setvar \"CMDECHO\" 1)")
         self.code.append("  (princ \"\\nP-CAD rendering complete.\\n\")")
@@ -1666,6 +1717,13 @@ class AutoLISPGenerator:
                     ent_var_name = f"sketch_{sketch['name']}_{polyline['name']}"
                     self.code.append(f"  (setq {ent_var_name} (entlast))")
             
+            # Generate code for individual lines in the sketch
+            if 'lines' in sketch:
+                for line in sketch['lines']:
+                    p1_x, p1_y = self._parse_point_expr(line['p1'])
+                    p2_x, p2_y = self._parse_point_expr(line['p2'])
+                    self.code.append(f"  (command \"._LINE\" (list {p1_x} {p1_y} 0.0) (list {p2_x} {p2_y} 0.0) \"\")")
+            
             self.code.append("")
     
     def _parse_point_expr(self, point_expr: str) -> Tuple[str, str]:
@@ -1722,7 +1780,7 @@ class AutoLISPGenerator:
                 hatch_style_name = region.get('hatch', 'concrete')
                 hatch_style = self.parser.hatch_styles.get(hatch_style_name, {})
                 pattern = hatch_style.get('pattern', 'ANSI37')
-                scale = hatch_style.get('scale', 1.0)
+                scale = 25.0 # Set hatch pattern scale to 25 as requested
                 angle = hatch_style.get('angle', 0)
                 
                 # Create hatch from last entity (the polyline)
@@ -1888,30 +1946,30 @@ class AutoLISPGenerator:
             
             # Parse segments if available
             if segments:
-                # Parse segment string: "(x1, y1) -> (x2, y2) -> ..."
-                points = self._parse_segments_to_points(segments)
+                # Parse segment string: "(x1, y1):r=R -> (x2, y2) -> ..."
+                parsed_segments = self._parse_segments_to_points(segments)
                 
                 # Validate variable references in segment expressions
                 all_defined_vars = set(self.parser.params.keys()) | set(self.parser.derive.keys()) | set(dims.keys())
 
-                for pt in points:
-                    for expr in pt:
-                        # Extract variable names from expression (simple regex)
-                        import re
-                        var_names = re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', str(expr))
-                        for var in var_names:
-                            if var not in all_defined_vars and not var.replace('.', '').isdigit():
-                                # Skip numeric-looking things and known keywords
-                                if var not in ['pi', 'sin', 'cos', 'tan', 'sqrt', 'abs']:
-                                    print(f"WARNING: Barshape '{name}' uses undefined variable '{var}' in segment expression '{expr}'")
-                                    print(f"         Ensure '{var}' is defined in 'params', 'derive', or local 'dims'.")
+                for seg in parsed_segments:
+                    if seg['point']:
+                        for expr in seg['point']:
+                            var_names = re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', str(expr))
+                            for var in var_names:
+                                if var not in all_defined_vars and not var.replace('.', '').isdigit():
+                                    if var not in ['pi', 'sin', 'cos', 'tan', 'sqrt', 'abs']:
+                                        print(f"WARNING: Barshape '{name}' uses undefined variable '{var}' in segment expression '{expr}'")
+                                        print(f"         Ensure '{var}' is defined in 'params', 'derive', or local 'dims'.")
                 
-                if points:
+                if parsed_segments:
                     self.code.append(f"  ; Dims: {dims}")
                     
+                    # Check if any segments have fillet radius
+                    has_fillets = any(seg.get('radius') for seg in parsed_segments)
+                    
                     # Prepare local variables string for defun
-                    # e.g. (base_pt / pt x y sc L h)
-                    local_vars_list = ['pt', 'x', 'y', 'sc']
+                    local_vars_list = ['pt', 'x', 'y', 'sc', 'prev_x', 'prev_y', 'r']
                     local_vars_list.extend(dims.keys())
                     local_vars_str = " ".join(local_vars_list)
                     
@@ -1929,14 +1987,28 @@ class AutoLISPGenerator:
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"rebar\" \"\")")
                     self.code.append(f"    (command \"._PLINE\")")
                     
-                    for pt in points:
+                    for i, seg in enumerate(parsed_segments):
+                        pt = seg['point']
+                        radius = seg.get('radius')
                         x_expr = self._convert_expr_to_lisp(pt[0])
                         y_expr = self._convert_expr_to_lisp(pt[1])
+                        
                         # Apply scale to coordinates relative to base point
-                        # Use list to construct point (x y) to ensure float evaluation
                         self.code.append(f"    (setq x (+ (car base_pt) (* sc {x_expr})))")
                         self.code.append(f"    (setq y (+ (cadr base_pt) (* sc {y_expr})))")
-                        self.code.append(f"    (command (list x y))")
+                        
+                        if radius:
+                            # Fillet at virtual corner - use AutoCAD PLINE arc option
+                            # For now, just add the point; full arc geometry requires more complex calculation
+                            # The 'A' option in PLINE creates arcs, but proper fillet requires tangent calculation
+                            r_expr = self._convert_expr_to_lisp(radius)
+                            self.code.append(f"    ; Fillet corner: r={radius}")
+                            self.code.append(f"    (setq r (* sc {r_expr}))")
+                            # For simplified rendering, just add the virtual point
+                            # TODO: Calculate actual arc tangent points for proper fillet geometry
+                            self.code.append(f"    (command (list x y))")
+                        else:
+                            self.code.append(f"    (command (list x y))")
                     
                     self.code.append(f"    (command \"\")")
                     
@@ -1944,7 +2016,7 @@ class AutoLISPGenerator:
                     if hooks:
                         self.code.append(f"    ; Drawing hooks for {name}")
                         # Get last segment end point for end hook
-                        if len(points) >= 2:
+                        if len(parsed_segments) >= 2:
                             # End hook: based on direction from second-to-last to last point
                             if 'end' in hooks:
                                 end_hook = hooks['end']
@@ -1964,9 +2036,9 @@ class AutoLISPGenerator:
                                 length = start_hook.get('length', '50')
                                 angle_lisp = self._convert_expr_to_lisp(angle)
                                 length_lisp = self._convert_expr_to_lisp(length)
-                                first_pt = points[0]
-                                fx_expr = self._convert_expr_to_lisp(first_pt[0])
-                                fy_expr = self._convert_expr_to_lisp(first_pt[1])
+                                first_seg = parsed_segments[0]
+                                fx_expr = self._convert_expr_to_lisp(first_seg['point'][0])
+                                fy_expr = self._convert_expr_to_lisp(first_seg['point'][1])
                                 self.code.append(f"    ; Start hook: angle={angle}, length={length}")
                                 self.code.append(f"    (setq fx (+ (car base_pt) (* sc {fx_expr})))")
                                 self.code.append(f"    (setq fy (+ (cadr base_pt) (* sc {fy_expr})))")
@@ -1984,6 +2056,28 @@ class AutoLISPGenerator:
         self.code.append("")
 
 
+    def _generate_labels(self):
+        """生成标签文字代码"""
+        if not self.parser.labels:
+            return
+        
+        self.code.append("  ; --- Labels ---")
+        for label in self.parser.labels:
+            text = label['text']
+            x_expr, y_expr = label['at']
+            layer = label.get('layer', 'text')
+            
+            x_lisp = self._convert_expr_to_lisp(x_expr)
+            y_lisp = self._convert_expr_to_lisp(y_expr)
+            
+            self.code.append(f"  ; Label: {text}")
+            self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
+            self.code.append(f"  (setq lbl_pt (list {x_lisp} {y_lisp} 0.0))")
+            # Use MTEXT with middle center justification
+            self.code.append(f"  (command \"._MTEXT\" lbl_pt \"_J\" \"_MC\" \"_H\" {LABEL_TEXT_HEIGHT} \"_W\" 0 \"{text}\" \"\")")
+        
+        self.code.append("")
+
     def _generate_utility_functions(self):
         """生成渲染所需的通用 AutoLISP 函数"""
         self.code.append("  ; --- Utility Functions for Rendering ---")
@@ -1999,28 +2093,47 @@ class AutoLISPGenerator:
         self.code.append("    (if (and txt (/= txt \"\"))")
         self.code.append("      (progn")
         self.code.append("        (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-        self.code.append("        (command \"._MTEXT\" cp \"_J\" \"_MC\" \"_W\" (* 0.9 w) txt \"\")")
+        # Table cell text height from global config
+        self.code.append(f"        (command \"._MTEXT\" cp \"_J\" \"_MC\" \"_H\" {TABLE_CELL_TEXT_HEIGHT} \"_W\" (* 0.9 w) txt \"\")")
         self.code.append("      )")
         self.code.append("    )")
         self.code.append("  )")
         self.code.append("")
 
     def _parse_segments_to_points(self, segments_str: str) -> list:
-        """Parse segment string like '(x1, y1) -> (x2, y2) -> ...' into list of point tuples"""
-        points = []
+        """Parse segment string with fillet radius support.
+        
+        Syntax: '(x1, y1):r=R1 -> (x2, y2) -> (x3, y3):r=R2'
+        
+        Returns list of segment dicts:
+          [{'point': (x, y), 'radius': None or 'R1'}, ...]
+        """
+        segments = []
         # Split by ->
         parts = segments_str.split('->')
         for part in parts:
             part = part.strip()
-            # Extract (x, y) from each part
-            match = re.search(r'\(([^)]+)\)', part)
-            if match:
-                coord_str = match.group(1)
-                # Split by comma, handling potential spaces
+            if not part:
+                continue
+            
+            segment = {'point': None, 'radius': None}
+            
+            # Check for :r=<expr> suffix after the point
+            # Pattern: (x, y):r=expr or (x, y):r=expr
+            radius_match = re.search(r'\):r=([^\s,;>\]]+)', part)
+            if radius_match:
+                segment['radius'] = radius_match.group(1).strip()
+            
+            # Extract (x, y) point
+            point_match = re.search(r'\(([^)]+)\)', part)
+            if point_match:
+                coord_str = point_match.group(1)
                 coords = [c.strip() for c in coord_str.split(',')]
                 if len(coords) == 2:
-                    points.append((coords[0], coords[1]))
-        return points
+                    segment['point'] = (coords[0], coords[1])
+                    segments.append(segment)
+        
+        return segments
     
     def _generate_tables(self):
         """生成表格代码 - generates AutoLISP code to draw tables"""
@@ -2201,7 +2314,7 @@ class AutoLISPGenerator:
                 title_y = origin[1] + 20  # 20mm above origin
                 title_x = origin[0] + total_w / 2
                 self.code.append(f"  (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                self.code.append(f"  (command \"._MTEXT\" (list {title_x} {title_y} 0.0) \"_J\" \"_MC\" \"_H\" 8 \"_W\" {total_w} \"{title}\" \"\")")
+                self.code.append(f"  (command \"._MTEXT\" (list {title_x} {title_y} 0.0) \"_J\" \"_MC\" \"_H\" {LAYOUT_TITLE_TEXT_HEIGHT} \"_W\" {total_w} \"{title}\" \"\")")
             
             # Generate drawing function for this layout
             self.code.append(f"  (defun draw-layout-{name} (/ x y cell_w cell_h base_pt label_pt note_pt)")
@@ -2229,7 +2342,7 @@ class AutoLISPGenerator:
                     self.code.append(f"    ; Label: {label}")
                     self.code.append(f"    (setq label_pt (list x (+ y 50) 0.0))")
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" 5 \"_W\" (- cell_w 10) \"{label}\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" {LAYOUT_LABEL_TEXT_HEIGHT} \"_W\" (- cell_w 10) \"{label}\" \"\")")
                 
                 # Draw the barshape (using a larger scale for standalone display)
                 if shape and shape in self.parser.barshapes:
@@ -2242,7 +2355,7 @@ class AutoLISPGenerator:
                     self.code.append(f"    ; Note: {note}")
                     self.code.append(f"    (setq note_pt (list x (- y 60) 0.0))")
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" 3.5 \"_W\" (- cell_w 10) \"{note}\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" {LAYOUT_NOTE_TEXT_HEIGHT} \"_W\" (- cell_w 10) \"{note}\" \"\")")
                 
                 # Draw custom annotations
                 annotations = p.get('annotations', [])
@@ -2260,9 +2373,9 @@ class AutoLISPGenerator:
                             self.code.append(f"    (setq ann_pt (list (+ (car base_pt) {at_x}) (+ (cadr base_pt) {at_y}) 0.0))")
                             # Use Middle Center justification
                             if angle != 0:
-                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" 3.5 \"_W\" 0 \"{text}\" \"\")")
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" {ANNOTATION_TEXT_HEIGHT} \"_W\" 0 \"{text}\" \"\")")
                             else:
-                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" 3.5 \"_W\" 0 \"{text}\" \"\")")
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" {ANNOTATION_TEXT_HEIGHT} \"_W\" 0 \"{text}\" \"\")")
                             
                 self.code.append("")
             
@@ -2372,7 +2485,7 @@ def main():
     
     print(f"AutoLISP code written to: {output_file}")
     print(f"\nTo use in AutoCAD:")
-    print(f"  1. Load: (load \"{output_file.absolute()}\")")
+    print(f"  1. Load: (load \"{str(output_file.absolute()).replace(chr(92), '/')}\")")
     
     # Generate example parameter values
     param_names = list(parser.params.keys())

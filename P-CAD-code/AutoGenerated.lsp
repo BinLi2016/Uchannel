@@ -29,6 +29,7 @@
 ; =========================================
 (defun c:PCAD_Render ()
   (setvar "CMDECHO" 0)
+  (setvar "DIMSCALE" 25.0)
 
   ; Check and set default parameters if not defined
   (if (not (boundp 'W_cm)) (setq W_cm 400.0))
@@ -153,7 +154,7 @@
   (command "._-LAYER" "_S" "hatch" "")
   ; Create hatch from sketch: BaseSlab
   (if (boundp 'sketch_BaseSlab_outer)
-    (command "._HATCH" "_P" "ANSI31" "1.0" "0" "_S" sketch_BaseSlab_outer "" "")
+    (command "._HATCH" "_P" "ANSI31" "25.0" "0" "_S" sketch_BaseSlab_outer "" "")
     (princ "\nWarning: Boundary entity sketch_BaseSlab_outer not found for region BaseRegion\n")
   )
 
