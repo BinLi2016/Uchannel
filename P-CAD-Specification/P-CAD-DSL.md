@@ -605,7 +605,34 @@ table 盖板与角钢材料表 {
 }
 
 
-19. Bar Shape Diagrams (Level A)
+607: 
+608: 18.8 Barshape Layout (Level A)
+609: 
+610: `barshape_layout` allows for freeform grid placement of barshapes, useful for detail drawings that are not strict schedules.
+611: 
+612: barshape_layout Name {
+613:   title = "Details of rebars";
+614:   grid = 3x3;              // columns x rows
+615:   cell_size = (100, 150);  // width, height in mm
+616:   origin = (0, 0);         // Top-left insertion point
+617: 
+618:   place ShapeName at (col, row) {
+619:     label = "Text above";
+620:     note = "Text below";
+621:     annotations = [
+622:       { text="Relative Text"; at=(x,y); layer=text; angle=0; },
+623:       ...
+624:     ];
+625:   }
+626: }
+627: 
+628: Annotation properties:
+629: - `text`: The string content.
+630: - `at`: (x, y) offset from the shape's center/origin within the cell.
+631: - `layer`: (Optional) Layer name, defaults to "text".
+632: - `angle`: (Optional) Rotation angle in degrees, defaults to 0.
+633: 
+634: 19. Bar Shape Diagrams (Level A)
 19.1 Purpose
 
 Bar shape diagrams (大样) are used in schedules to define bending geometry and dimensions.
@@ -660,6 +687,70 @@ barshape S3 {
   dims { a = 120; b = 200; r = 8; }
 }
 
+19.4 Coordinate System Conventions (Normative)
+
+When defining barshape segments, the local coordinate system origin should be placed consistently:
+
+| Shape Type | Origin Placement | Segment Direction |
+|------------|------------------|-------------------|
+| `straight` | Left end of bar | Left to right (+X) |
+| `L_bend` | Corner junction point | Hook extends in -X, main bar in +Y |
+| `U_bend` | Bottom-left of opening | Counter-clockwise path |
+| `stirrup` | Bottom-left corner | Counter-clockwise (closed loop) |
+| `custom` | Center-bottom of bounding box | As needed for visual centering |
+
+**Rationale**: Consistent origin placement ensures barshapes render correctly when placed in table cells,
+which use the shape's origin as the insertion point.
+
+**Example (L-bend with hook at top-left)**:
+```
+barshape N1 {
+  type = custom;
+  segments = [
+    (-21.6, H) ->    // Hook extends left from top
+    (0, H) ->        // Top of vertical bar
+    (0, 45.3) ->     // Before 45° transition
+    (45.3, 0) ->     // After 45° transition
+    (75.3, 0)        // End of horizontal tail
+  ];
+  dims { H = N1_H; }
+}
+```
+
+19.5 Variable Scoping in Segments (Normative)
+
+Segment coordinate expressions may **only** reference:
+
+1. **Global parameters** (defined in `params` block)
+2. **Derived values** (defined in `derive` block)
+3. **Numeric literals**
+
+The `dims` block within a barshape is for **documentation purposes only**. Variables declared in `dims`
+are **not** automatically available for use in segment expressions.
+
+**Correct usage**:
+```
+derive {
+  N1_H = H3 + 50;
+}
+
+barshape N1 {
+  dims { H = N1_H; }           // Documentation
+  segments = [
+    (0, N1_H) -> (0, 0)        // Uses derived value N1_H
+  ];
+}
+```
+
+**Incorrect usage** (will cause undefined variable error):
+```
+barshape N1 {
+  dims { H = H3 + 50; }
+  segments = [
+    (0, H) -> (0, 0)           // ERROR: H is not globally defined
+  ];
+}
+```
 
 20. Materials and Grades (Level A)
 20.1 Materials Block

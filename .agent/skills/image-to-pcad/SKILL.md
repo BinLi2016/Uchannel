@@ -13,6 +13,15 @@ This guide provides instructions for converting a wide variety of reinforced con
 
 ---
 
+## Formal Specification
+
+This skill is designed to generate code that strictly adheres to the **P-CAD Parametric Description Language**.
+
+Refer to the formal specification for syntax, rules, and semantic details:
+[P-CAD-DSL.md](file:///h:/U%E5%BD%A2%E6%A7%BD%E9%85%8D%E7%AD%8B%E8%BD%AF%E4%BB%B6/P-CAD-Specification/P-CAD-DSL.md)
+
+---
+
 ## Step 0: Image Classification
 
 Identify which components are present in the image and map them to P-CAD blocks:
@@ -113,12 +122,66 @@ table UChannelParams {
 
 ---
 
+## Step 5.1: Barshape Coordinate System Conventions
+
+Place the barshape origin consistently based on shape type:
+
+| Shape Type | Origin Placement | Segment Direction |
+|------------|------------------|-------------------|
+| L-bend | Corner junction | Hook in -X, main bar in +Y |
+| U-shape | Bottom-left of opening | Counter-clockwise |
+| Rectangle/Stirrup | Bottom-left corner | Counter-clockwise (closed) |
+| Trapezoid | Center of top edge | As needed |
+
+**Example (L-bend)**:
+```pcad
+barshape N1 {
+  segments = [
+    (-21.6, N1_H) ->   // Hook extends left
+    (0, N1_H) ->       // Top of vertical bar
+    (0, 45.3) ->       // Before 45° bend
+    (45.3, 0) ->       // After 45° bend
+    (75.3, 0)          // Horizontal tail
+  ];
+}
+```
+
+---
+
+## Step 5.2: Variable Scoping Rules (CRITICAL)
+
+> [!WARNING]
+> **Never use local `dims` variables in segment expressions!**
+> Only use `params`, `derive` values, or numeric literals.
+
+**Correct**:
+```pcad
+derive { N1_H = H3 + 50; }
+barshape N1 {
+  dims { H = N1_H; }    // Documentation only
+  segments = [(0, N1_H) -> (0, 0)];  // Uses derived value
+}
+```
+
+**Incorrect** (causes `numberp: nil` error):
+```pcad
+barshape N1 {
+  dims { H = H3 + 50; }
+  segments = [(0, H) -> (0, 0)];    // ERROR: H not defined
+}
+```
+
+---
+
 ## Verification Checklist
 - [ ] Does the `sketch` represent all external boundaries?
 - [ ] Are all rebars accounted for in `bars`, `mesh`, or `barshape`?
+- [ ] Are all dimensions (L, H, B, etc.) from the image captured as `dimension` blocks?
+- [ ] Is `hatch` used ONLY if explicitly shown in the reference image?
 - [ ] Are variables (H1, B2) used instead of hardcoded numbers?
 - [ ] Does the `table` match the provided schedule in the image?
 - [ ] Are layers and colors consistent with the P-CAD-DSL standard?
+- [ ] Are segment expressions using only `params`/`derive` values (not local `dims`)?
 
 ---
 
@@ -483,3 +546,77 @@ After generating P-CAD code, verify:
 - [ ] Layers are properly defined
 - [ ] File transpiles without errors
 - [ ] AutoCAD rendering matches the reference image layout
+
+---
+
+## Step 8: Freeform Layout Conversion (barshape_layout)
+
+When the reference image shows barshapes in a **grid layout** (not a table), use `barshape_layout` instead of `table`:
+
+### 8.1 When to Use barshape_layout
+
+Use `barshape_layout` when:
+- Shapes are arranged in a visual grid (rows × columns)
+- Each cell has: label (e.g., "N1 Φ16"), large shape, and note
+- No table borders are needed
+- The drawing is titled (e.g., "Details of rebars")
+
+### 8.2 Syntax
+
+```pcad
+barshape_layout LayoutName {
+    title = "Details of rebars";
+    grid = 3x3;              // columns x rows
+    cell_size = (100, 150);  // width, height in mm
+    origin = (0, 0);
+    
+    // place <shape> at (col, row) { label = "..."; note = "..."; }
+    place N1 at (0, 0) { label = "N1 Φ16"; note = "H3+50"; }
+    place N2 at (1, 0) { label = "N2 Φ16"; note = "H3+50"; }
+    // ... more placements
+}
+```
+
+### 8.3 Grid Position Reference
+
+```
+       col=0      col=1      col=2
+      ┌─────────┬─────────┬─────────┐
+row=0 │ (0,0)   │ (1,0)   │ (2,0)   │
+      ├─────────┼─────────┼─────────┤
+row=1 │ (0,1)   │ (1,1)   │ (2,1)   │
+      ├─────────┼─────────┼─────────┤
+row=2 │ (0,2)   │ (1,2)   │ (2,2)   │
+      └─────────┴─────────┴─────────┘
+```
+
+### 8.4 Example: Converting 钢筋大样-2.png
+
+```pcad
+barshape_layout RebarDetails2 {
+    title = "Details of rebars";
+    grid = 3x3;
+    cell_size = (100, 150);
+    
+    place N1 at (0, 0) { label = "N1 Φ16"; note = "H3+50"; }
+    place N2 at (1, 0) { 
+        label = "N2 Φ16"; 
+        note = "H3+50";
+        // Detailed relative annotations
+        annotations = [
+            { text="Specific Detail"; at=(50, 20); angle=45; }
+        ];
+    }
+
+    place N3 at (2, 0) { label = "N3 Φ12"; note = "2B~(B2-12)"; }
+    
+    place N6 at (0, 1) { label = "N6 Φ16"; note = "(H3+50)~(H1+30)"; }
+    place N5 at (1, 1) { label = "N5 Φ16"; note = "(H3+50)~(H1+30)"; }
+    place N8 at (2, 1) { label = "N8 Φ12"; note = "122"; }
+    
+    place N4 at (0, 2) { label = "N4 Φ12"; note = "28~(L2-12)"; }
+    place N7 at (1, 2) { label = "N7 Φ12"; note = "0~(L4+L3-20)"; }
+    place N7_1 at (2, 2) { label = "N7-1 Φ12"; note = "(L4+L3-20)"; }
+}
+```
+

@@ -8,6 +8,7 @@ P-CAD to AutoLISP Transpiler
 
 import re
 import sys
+import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -43,6 +44,7 @@ class PCADParser:
         self.callouts = []
         self.section_markers = []
         self.components = {}
+        self.barshape_layouts = {}  # P-CAD v1.1: freeform barshape placement
         
     def parse(self):
         """解析 P-CAD 文件"""
@@ -93,6 +95,11 @@ class PCADParser:
                 
             elif line.startswith('rebar_set'):
                 i = self._parse_rebar_set(i)
+                continue
+            
+            # IMPORTANT: Check barshape_layout BEFORE barshape (both start with 'barshape')
+            elif line.startswith('barshape_layout'):
+                i = self._parse_barshape_layout(i)
                 continue
                 
             elif line.startswith('barshape'):
@@ -275,7 +282,7 @@ class PCADParser:
         sketch_name = match.group(1)
         layer = match.group(2)
         i += 1
-        polyline = None
+        polylines = []
         while i < len(self.lines):
             line = re.sub(r'//.*$', '', self.lines[i]).strip()
             if not line:
@@ -295,14 +302,14 @@ class PCADParser:
                             i += 1
                             continue
                         if p_line == '}': break
-                        p_line = re.sub(r'^\s*->\s*', '', p_line)
-                        p_match = re.search(r'\(([^)]+)\)', p_line)
-                        if p_match: points.append(p_match.group(1).strip())
+                        # Handle multiple points on one line: (x1, y1) -> (x2, y2)
+                        p_line = re.sub(r'->', ' ', p_line)
+                        for p_match in re.finditer(r'\(([^)]+)\)', p_line):
+                            points.append(p_match.group(1).strip())
                         i += 1
-                    polyline = {'name': polyline_name, 'closed': is_closed, 'points': points}
+                    polylines.append({'name': polyline_name, 'closed': is_closed, 'points': points})
             i += 1
-        if polyline:
-            self.sketches.append({'name': sketch_name, 'layer': layer, 'polyline': polyline})
+        self.sketches.append({'name': sketch_name, 'layer': layer, 'polylines': polylines})
         return i
     
     def _parse_region(self, start_idx: int) -> int:
@@ -1040,6 +1047,187 @@ class PCADParser:
         print(f"DEBUG: Found callout: {callout['name']}")
         return i
 
+    def _parse_barshape_layout(self, start_idx: int) -> int:
+        """解析 barshape_layout Name { ... } 块 - freeform grid placement"""
+        i = start_idx
+        match = re.search(r'barshape_layout\s+([\w\u4e00-\u9fa5]+)', self.lines[i])
+        if not match:
+            return i
+        
+        name = match.group(1)
+        layout = {
+            'name': name,
+            'title': '',
+            'grid': (3, 3),
+            'cell_size': (100, 150),
+            'origin': (0, 0),
+            'placements': []
+        }
+        i += 1
+        
+        while i < len(self.lines):
+            line = re.sub(r'//.*$', '', self.lines[i]).strip()
+            if not line:
+                i += 1
+                continue
+            if line == '}':
+                break
+            
+            # title = "Details of rebars";
+            m = re.search(r'title\s*=\s*"([^"]*)"', line)
+            if m:
+                layout['title'] = m.group(1)
+            
+            # grid = 3x3; or grid = (3, 3);
+            m = re.search(r'grid\s*=\s*(\d+)\s*x\s*(\d+)', line)
+            if m:
+                layout['grid'] = (int(m.group(1)), int(m.group(2)))
+            else:
+                m = re.search(r'grid\s*=\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)', line)
+                if m:
+                    layout['grid'] = (int(m.group(1)), int(m.group(2)))
+            
+            # cell_size = (100, 150);
+            m = re.search(r'cell_size\s*=\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)', line)
+            if m:
+                try:
+                    layout['cell_size'] = (float(m.group(1)), float(m.group(2)))
+                except:
+                    layout['cell_size'] = (100, 150)
+            
+            # origin = (0, 0);
+            m = re.search(r'origin\s*=\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)', line)
+            if m:
+                try:
+                    layout['origin'] = (float(m.group(1)), float(m.group(2)))
+                except:
+                    layout['origin'] = (0, 0)
+            
+            # place N1 at (0, 0) { ... }
+            if line.startswith('place'):
+                m = re.search(r'place\s+(\w+)\s+at\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*\{', line)
+                if m:
+                    shape_name = m.group(1)
+                    col = int(m.group(2))
+                    row = int(m.group(3))
+                    
+                    props_str = ""
+                    current_depth = 0
+                    
+                    # Analyze the first line (the place line)
+                    # It definitely has at least one '{' from the regex match
+                    # We need to count braces in this line properly
+                    # Remove comments first
+                    clean_line = re.sub(r'//.*$', '', line)
+                    # Count braces
+                    current_depth += clean_line.count('{')
+                    current_depth -= clean_line.count('}')
+                    
+                    # Extract content after the first '{'
+                    if '{' in clean_line:
+                        props_str = clean_line.split('{', 1)[1] + " "
+                    
+                    # If depth is already 0, we are done (single line case like: place ... { ... })
+                    if current_depth > 0:
+                         i += 1
+                         while i < len(self.lines):
+                            l = re.sub(r'//.*$', '', self.lines[i]).strip()
+                            if not l:
+                                i += 1
+                                continue
+                            
+                            # Count braces in this line
+                            open_count = l.count('{')
+                            close_count = l.count('}')
+                            
+                            # Check if this line closes the block
+                            # We need to be careful: does the block close mid-line?
+                            # For simplicity in this parser, we assume standard formatting or just accumulate
+                            # But strictly we should find WHERE it closes.
+                            
+                            # However, to fix the immediate bug, we just need to verify depth reaches 0
+                            
+                            if current_depth + open_count - close_count == 0:
+                                # This line finishes the block.
+                                # But we might have content before the final '}'
+                                # And potentially multiple '}'
+                                # It's safer to just accumulate the whole line (or up to the closing brace)
+                                # Given the complexity, let's assume the last '}' that brings depth to 0 is the end.
+                                # But simpler: just accumulate until depth is 0.
+                                
+                                # Accumulate
+                                props_str += l + " "
+                                
+                                current_depth += open_count
+                                current_depth -= close_count
+                                break
+                            
+                            current_depth += open_count
+                            current_depth -= close_count
+                            props_str += l + " "
+                            i += 1
+                    
+                    placement = {
+                        'shape': shape_name,
+                        'col': col,
+                        'row': row,
+                        'label': '',
+                        'note': ''
+                    }
+                    
+                    # Parse properties inside the braces
+                    label_m = re.search(r'label\s*=\s*"([^"]*)"', props_str)
+                    if label_m:
+                        placement['label'] = label_m.group(1)
+                    
+                    note_m = re.search(r'note\s*=\s*"([^"]*)"', props_str)
+                    if note_m:
+                        placement['note'] = note_m.group(1)
+                    
+                    layout['placements'].append(placement)
+                
+                    # Parse annotations list
+                    annotations = []
+                    # Check for "annotations = [ ... ]" inside placement block
+                    ann_match = re.search(r'annotations\s*=\s*\[(.*?)\]', props_str, re.DOTALL)
+                    if ann_match:
+                        ann_content = ann_match.group(1)
+                        # Parse individual annotation objects { text="..."; at=(x,y); ... }
+                        # This regex finds content between { and }
+                        for ann_obj_match in re.finditer(r'\{([^}]+)\}', ann_content):
+                            ann_props_str = ann_obj_match.group(1)
+                            ann = {'text': '', 'at': (0, 0), 'layer': 'text'}
+                            
+                            # Parse text
+                            t_m = re.search(r'text\s*=\s*"([^"]*)"', ann_props_str)
+                            if t_m: ann['text'] = t_m.group(1)
+                            
+                            # Parse at
+                            at_m = re.search(r'at\s*=\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)', ann_props_str)
+                            if at_m:
+                                try:
+                                    ann['at'] = (float(at_m.group(1)), float(at_m.group(2)))
+                                except:
+                                    pass
+                                    
+                            # Parse layer
+                            l_m = re.search(r'layer\s*=\s*(\w+)', ann_props_str)
+                            if l_m: ann['layer'] = l_m.group(1)
+                            
+                            # Parse angle
+                            a_m = re.search(r'angle\s*=\s*([-\d.]+)', ann_props_str)
+                            if a_m: ann['angle'] = float(a_m.group(1))
+                            
+                            annotations.append(ann)
+                    
+                    placement['annotations'] = annotations
+            
+            i += 1
+        
+        self.barshape_layouts[name] = layout
+        print(f"DEBUG: Found barshape_layout: {name} with {len(layout['placements'])} placements")
+        return i
+
 
 class AutoLISPGenerator:
     """AutoLISP 代码生成器 (Approach 4: 全局变量参数注入)"""
@@ -1170,6 +1358,9 @@ class AutoLISPGenerator:
         # Generate dimensions
         self._generate_dimensions()
         
+        # Generate bars
+        self._generate_bars()
+        
         # Generate barshapes
         self._generate_barshapes()
         
@@ -1181,6 +1372,9 @@ class AutoLISPGenerator:
         
         # Generate sheets (layouts)
         self._generate_sheets()
+        
+        # Generate barshape layouts (freeform placement)
+        self._generate_barshape_layouts()
         
         self.code.append("  (setvar \"CMDECHO\" 1)")
         self.code.append("  (princ \"\\nP-CAD rendering complete.\\n\")")
@@ -1208,26 +1402,83 @@ class AutoLISPGenerator:
             # table(TableName, key) -> (get-table-row "TableName" key)
             return f"; Table accessor not fully implemented: {expr}"
 
-        # Handle math functions: sin(), cos(), tan(), sqrt(), abs(), pow()
-        math_funcs = ['sin', 'cos', 'tan', 'sqrt', 'abs']
-        for func in math_funcs:
-            if expr.startswith(f'{func}(') and expr.endswith(')'):
-                inner = expr[len(func)+1:-1]
-                lisp_inner = self._convert_expr_to_lisp(inner)
-                # AutoLISP uses (sin x) for radians, but P-CAD uses degrees
-                # Convert degrees to radians for trig functions
-                if func in ['sin', 'cos', 'tan']:
-                    return f"({func} (* {lisp_inner} (/ pi 180.0)))"
-                return f"({func} {lisp_inner})"
+        # Handle math functions: sin(), cos(), tan(), sqrt(), abs(), max(), min(), floor(), fix()
+        # "fix" in AutoLISP is truncation (like floor but towards zero for negatives, or just int conversion)
+        math_funcs = ['sin', 'cos', 'tan', 'sqrt', 'abs', 'max', 'min', 'floor', 'fix']
         
-        # Handle pow(base, exp)
+        # Helper to find matching closing parenthesis
+        def find_closing_paren(s, start):
+            depth = 1
+            for k in range(start, len(s)):
+                if s[k] == '(': depth += 1
+                elif s[k] == ')': depth -= 1
+                if depth == 0: return k
+            return -1
+
+        for func in math_funcs:
+            # Check for generic function pattern func(...)
+            # Use strict startswith check but handle whitespace safely? 
+            # Actually expr matches exactly or is clean substring.
+            if expr.startswith(f'{func}('):
+                # Ensure it closes at the end
+                if not expr.endswith(')'):
+                    continue
+                    
+                inner = expr[len(func)+1:-1]
+                
+                # Split args by comma respecting parentheses
+                args = []
+                current_arg = ""
+                d = 0
+                for char in inner:
+                    if char == '(': d += 1
+                    elif char == ')': d -= 1
+                    elif char == ',' and d == 0:
+                        args.append(current_arg.strip())
+                        current_arg = ""
+                        continue
+                    current_arg += char
+                if current_arg: args.append(current_arg.strip())
+                
+                # Convert all args
+                lisp_args = [self._convert_expr_to_lisp(arg) for arg in args]
+                
+                # Special handling for trig functions (degrees to radians)
+                if func in ['sin', 'cos', 'tan']:
+                    if len(lisp_args) == 1:
+                        return f"({func} (* {lisp_args[0]} (/ pi 180.0)))"
+                
+                # Special handling for pow(b, e) -> (expt b e)
+                if func == 'pow': # Not in list above but captured if we add it? No "pow" is not in math_funcs list yet.
+                    pass 
+                
+                # Standard AutoLISP mapping
+                # max, min take variable args: (max a b c)
+                # sqrt, abs, floor, fix take 1 arg
+                
+                return f"({func} {' '.join(lisp_args)})"
+        
+        # Handle pow(base, exp) specifically if not in generic list (it maps to expt)
         if expr.startswith('pow(') and expr.endswith(')'):
-            inner = expr[4:-1]
-            parts = inner.split(',')
-            if len(parts) == 2:
-                base = self._convert_expr_to_lisp(parts[0].strip())
-                exp = self._convert_expr_to_lisp(parts[1].strip())
-                return f"(expt {base} {exp})"
+             inner = expr[4:-1]
+             # Parse args safely
+             args = []
+             current_arg = ""
+             d = 0
+             for char in inner:
+                 if char == '(': d += 1
+                 elif char == ')': d -= 1
+                 elif char == ',' and d == 0:
+                     args.append(current_arg.strip())
+                     current_arg = ""
+                     continue
+                 current_arg += char
+             if current_arg: args.append(current_arg.strip())
+             
+             if len(args) == 2:
+                 base = self._convert_expr_to_lisp(args[0])
+                 exp = self._convert_expr_to_lisp(args[1])
+                 return f"(expt {base} {exp})"
 
         # Handle simple variable reference
         if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', expr):
@@ -1236,9 +1487,19 @@ class AutoLISPGenerator:
                 return 't_param'
             return expr
         
-        # Handle numeric literals
+        # Handle numeric literals (positive)
         if re.match(r'^[\d.]+$', expr):
             return expr
+        
+        # Handle unary minus: -var or -123 or -(expr)
+        if expr.startswith('-'):
+            inner = expr[1:].strip()
+            # If it's a negative number literal, return as-is
+            if re.match(r'^[\d.]+$', inner):
+                return expr  # e.g., "-123" is valid in AutoLISP
+            # Otherwise, convert to (- 0 inner) for variables/expressions
+            inner_lisp = self._convert_expr_to_lisp(inner)
+            return f"(- 0 {inner_lisp})"
         
         # Handle expressions with parentheses: (B - W) / 2
         # First, check if entire expression is wrapped in parentheses
@@ -1342,48 +1603,68 @@ class AutoLISPGenerator:
 
     
     def _generate_sketches(self):
-        """生成 sketch (polyline) 代码"""
+        """生成 sketch (polyline) 代码 - 使用 entmake 创建 LWPOLYLINE"""
         for sketch in self.parser.sketches:
             self.code.append(f"  ; Sketch: {sketch['name']}")
             self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{sketch['layer']}\" \"\")")
             
-            polyline = sketch['polyline']
-            # Generate PLINE command
-            # Build all points first, then pass to PLINE command
-            point_vars = []
-            point_idx = 0
-            
-            for point_expr in polyline['points']:
-                # Skip comments
-                if point_expr.strip().startswith('//'):
-                    continue
-                # Convert point expression like "0, 0" or "B, 0" to AutoLISP
-                x_expr, y_expr = self._parse_point_expr(point_expr)
-                # Handle 't' variable specially
-                if 't' in x_expr and x_expr != 't':
-                    x_expr = x_expr.replace(' t ', ' t_param ').replace('(t)', '(t_param)')
-                if 't' in y_expr and y_expr != 't':
-                    y_expr = y_expr.replace(' t ', ' t_param ').replace('(t)', '(t_param)')
-                if x_expr == 't':
-                    x_expr = 't_param'
-                if y_expr == 't':
-                    y_expr = 't_param'
+            for polyline in sketch['polylines']:
+                # Use unique prefix for each polyline
+                var_prefix = f"{sketch['name']}_{polyline['name']}"
                 
-                # Create point variable to ensure proper evaluation
-                pt_var = f"pt_{point_idx}"
-                self.code.append(f"    (setq {pt_var} (list {x_expr} {y_expr} 0.0))")
-                point_vars.append(pt_var)
-                point_idx += 1
-            
-            # Now create PLINE with all points
-            if point_vars:
-                self.code.append("  (command \"._PLINE\")")
-                for pt_var in point_vars:
-                    self.code.append(f"    (command {pt_var})")
-                if polyline['closed']:
-                    self.code.append("  (command \"_C\")")
-                else:
-                    self.code.append("  (command \"\")")
+                # Collect point expressions
+                point_exprs = []
+                for point_expr in polyline['points']:
+                    if point_expr.strip().startswith('//'):
+                        continue
+                    x_expr, y_expr = self._parse_point_expr(point_expr)
+                    # Handle 't' variable specially
+                    if 't' in x_expr and x_expr != 't':
+                        x_expr = x_expr.replace(' t ', ' t_param ').replace('(t)', '(t_param)')
+                    if 't' in y_expr and y_expr != 't':
+                        y_expr = y_expr.replace(' t ', ' t_param ').replace('(t)', '(t_param)')
+                    if x_expr == 't':
+                        x_expr = 't_param'
+                    if y_expr == 't':
+                        y_expr = 't_param'
+                    point_exprs.append((x_expr, y_expr))
+                
+                if point_exprs:
+                    # Build LWPOLYLINE using entmake
+                    # This creates the polyline directly without command-line issues
+                    closed_flag = 1 if polyline['closed'] else 0
+                    
+                    self.code.append(f"  ; Create LWPOLYLINE for {var_prefix}")
+                    self.code.append(f"  (setq pts_{var_prefix} (list")
+                    for i, (x_expr, y_expr) in enumerate(point_exprs):
+                        self.code.append(f"    (list {x_expr} {y_expr})")
+                    self.code.append(f"  ))")
+                    
+                    # Use entmake to create LWPOLYLINE
+                    self.code.append(f"  (setq ent_data_{var_prefix} (list")
+                    self.code.append(f"    '(0 . \"LWPOLYLINE\")")
+                    self.code.append(f"    '(100 . \"AcDbEntity\")")
+                    self.code.append(f"    (cons 8 \"{sketch['layer']}\")")
+                    self.code.append(f"    '(100 . \"AcDbPolyline\")")
+                    self.code.append(f"    (cons 90 {len(point_exprs)})")
+                    self.code.append(f"    (cons 70 {closed_flag})")
+                    self.code.append(f"  ))")
+                    
+                    # Add vertices
+                    self.code.append(f"  (foreach pt pts_{var_prefix}")
+                    self.code.append(f"    (setq ent_data_{var_prefix}")
+                    self.code.append(f"      (append ent_data_{var_prefix}")
+                    self.code.append(f"        (list (cons 10 (list (car pt) (cadr pt) 0.0)))")
+                    self.code.append(f"      )")
+                    self.code.append(f"    )")
+                    self.code.append(f"  )")
+                    
+                    # Create the entity
+                    self.code.append(f"  (entmake ent_data_{var_prefix})")
+                    
+                    # Save entity reference
+                    ent_var_name = f"sketch_{sketch['name']}_{polyline['name']}"
+                    self.code.append(f"  (setq {ent_var_name} (entlast))")
             
             self.code.append("")
     
@@ -1457,12 +1738,23 @@ class AutoLISPGenerator:
                 # Use mapped pattern or fallback to ANSI31 (most universal)
                 mapped_pattern = pattern_map.get(pattern_upper, 'ANSI31')
                 
-                self.code.append("  ; Create hatch on last entity (the polyline)")
-                # Store last entity before hatch (entlast may change)
-                self.code.append("  (setq hatch_obj (entlast))")
-                # HATCH command syntax: HATCH _P pattern_name scale angle _S L "" ""
-                # Note: Using ANSI31 as it's universally available in all AutoCAD versions
-                self.code.append(f"  (command \"._HATCH\" \"_P\" \"{mapped_pattern}\" \"{scale}\" \"{angle}\" \"_S\" \"L\" \"\" \"\")")
+                self.code.append(f"  ; Create hatch from sketch: {sketch_name}")
+                
+                # Try to use specific polyline if specified in region, else use the last one in the sketch
+                # Region definition: boundary = Sketch.Polyline;
+                # Parser stores: boundary = {'sketch': 'Sketch', 'polyline': 'Polyline'}
+                polyline_name = region['boundary']['polyline']
+                ent_var_name = f"sketch_{sketch_name}_{polyline_name}"
+                
+                # Check if this entity variable was created?
+                # For safety, we can wrap in 'if' check in LISP or assumes it exists
+                # Or fallback to entlast if using old logic? NO, old logic is broken.
+                
+                # HATCH command syntax: HATCH _P pattern_name scale angle _S entity "" ""
+                self.code.append(f"  (if (boundp '{ent_var_name})")
+                self.code.append(f"    (command \"._HATCH\" \"_P\" \"{mapped_pattern}\" \"{scale}\" \"{angle}\" \"_S\" {ent_var_name} \"\" \"\")")
+                self.code.append(f"    (princ \"\\nWarning: Boundary entity {ent_var_name} not found for region {region['name']}\\n\")")
+                self.code.append("  )")
             
             self.code.append("")
     
@@ -1480,16 +1772,99 @@ class AutoLISPGenerator:
             self.code.append(f"  ; Dimension: {text}")
             self.code.append(f"  (command \"._-LAYER\" \"_S\" \"dim\" \"\")")
             
+            self.code.append(f"  (setq p1 (list {from_x} {from_y} 0.0))")
+            self.code.append(f"  (setq p2 (list {to_x} {to_y} 0.0))")
+            
+            # Use appropriate dimension command based on type
             if dim_type == 'linear':
-                # Calculate dimension line position (offset below)
-                self.code.append(f"    (setq dim_pt (list (/ (+ {from_x} {to_x}) 2.0) (- (min {from_y} {to_y}) 100.0) 0.0))")
-                self.code.append(f"    (command \"._DIMLINEAR\" (list {from_x} {from_y} 0.0) (list {to_x} {to_y} 0.0) dim_pt)")
+                # DIMLINEAR for horizontal measurement
+                # p3 should be positioned offset from midpoint, perpendicular to the line
+                self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
+                self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
+                # Offset dimension line perpendicular (vertical offset for horizontal dim)
+                self.code.append(f"  (setq p3 (list mid_x (+ mid_y 100) 0.0))")
+                self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
             elif dim_type == 'vertical':
-                # Calculate dimension line position (offset to the right)
-                self.code.append(f"    (setq dim_pt (list (+ (max {from_x} {to_x}) 100.0) (/ (+ {from_y} {to_y}) 2.0) 0.0))")
-                self.code.append(f"    (command \"._DIMLINEAR\" (list {from_x} {from_y} 0.0) (list {to_x} {to_y} 0.0) dim_pt)")
+                # DIMLINEAR with rotation for vertical measurement
+                self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
+                self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
+                # Offset dimension line perpendicular (horizontal offset for vertical dim)
+                self.code.append(f"  (setq p3 (list (+ mid_x 100) mid_y 0.0))")
+                self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
+            else:
+                # DIMALIGNED for oblique/aligned dimensions
+                self.code.append(f"  (setq p3 (list (+ {from_x} 50) (+ {from_y} 50) 0.0))")
+                self.code.append(f"  (command \"._DIMALIGNED\" p1 p2 p3)")
+            
+            self.code.append(f"  (setq ent (entlast))")
+            if text:
+                self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{text}\" ent \"\")")
             
             self.code.append("")
+
+    def _generate_bars(self):
+        """生成 bars 代码"""
+        for bars in self.parser.bars_list:
+            self.code.append(f"  ; Bars: {bars['name']}")
+            layer = bars.get('layer', 'rebar')
+            self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
+            
+            # Handle path if it's a line(...) -> line(...)
+            path = bars.get('path', '')
+            if 'line(' in path:
+                points = []
+                for p_match in re.finditer(r'line\(([^)]+)\)', path):
+                    pts = self._parse_point_expr(p_match.group(1))
+                    points.append(pts)
+                
+                if len(points) >= 2:
+                    p1_x, p1_y = points[0]
+                    p2_x, p2_y = points[1]
+                    
+                    spacing = bars.get('spacing')
+                    count = bars.get('count')
+                    
+                    if spacing or count:
+                        # Improved implementation: loop for multiple bars
+                        self.code.append(f"  (setq p1_base (list {p1_x} {p1_y} 0.0))")
+                        self.code.append(f"  (setq p2_base (list {p2_x} {p2_y} 0.0))")
+                        
+                        if spacing:
+                            spacing_lisp = self._convert_expr_to_lisp(spacing)
+                            self.code.append(f"  (setq s {spacing_lisp})")
+                            # Decide direction of distribution
+                            # If path is vertical, distribute horizontally
+                            # If path is horizontal, distribute vertically
+                            self.code.append(f"  (setq dx 0.0 dy 0.0)")
+                            self.code.append(f"  (if (< (abs (- {p1_x} {p2_x})) 0.1) (setq dx s) (setq dy s))")
+                            
+                            # Calculate number of repetitions
+                            if count:
+                                num_lisp = str(count)
+                            else:
+                                # Heuristic: if spacing is (L-Cover)/20, maybe count is 21?
+                                # Let's assume count is 20 if spacing formula has /20
+                                if '/20' in str(spacing):
+                                    num_lisp = "21"
+                                else:
+                                    num_lisp = "10" # Default
+                                    
+                            self.code.append(f"  (repeat {num_lisp}")
+                            self.code.append("    (command \"._LINE\" p1_base p2_base \"\")")
+                            self.code.append("    (setq p1_base (list (+ (car p1_base) dx) (+ (cadr p1_base) dy) 0.0))")
+                            self.code.append("    (setq p2_base (list (+ (car p2_base) dx) (+ (cadr p2_base) dy) 0.0))")
+                            self.code.append("  )")
+                        elif count:
+                            self.code.append(f"  (repeat {count}")
+                            self.code.append("    (command \"._LINE\" p1_base p2_base \"\")")
+                            # How to offset without spacing? Default 100
+                            self.code.append("    (setq p1_base (list (car p1_base) (+ (cadr p1_base) 100.0) 0.0))")
+                            self.code.append("    (setq p2_base (list (car p2_base) (+ (cadr p2_base) 100.0) 0.0))")
+                            self.code.append("  )")
+                    else:
+                        self.code.append(f"  (setq p1 (list {p1_x} {p1_y} 0.0))")
+                        self.code.append(f"  (setq p2 (list {p2_x} {p2_y} 0.0))")
+                        self.code.append("  (command \"._LINE\" p1 p2 \"\")")
     
     def _generate_barshapes(self):
         """生成钢筋大样代码 - generates AutoLISP functions to draw bar shapes with scaling support"""
@@ -1516,11 +1891,39 @@ class AutoLISPGenerator:
                 # Parse segment string: "(x1, y1) -> (x2, y2) -> ..."
                 points = self._parse_segments_to_points(segments)
                 
+                # Validate variable references in segment expressions
+                all_defined_vars = set(self.parser.params.keys()) | set(self.parser.derive.keys()) | set(dims.keys())
+
+                for pt in points:
+                    for expr in pt:
+                        # Extract variable names from expression (simple regex)
+                        import re
+                        var_names = re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', str(expr))
+                        for var in var_names:
+                            if var not in all_defined_vars and not var.replace('.', '').isdigit():
+                                # Skip numeric-looking things and known keywords
+                                if var not in ['pi', 'sin', 'cos', 'tan', 'sqrt', 'abs']:
+                                    print(f"WARNING: Barshape '{name}' uses undefined variable '{var}' in segment expression '{expr}'")
+                                    print(f"         Ensure '{var}' is defined in 'params', 'derive', or local 'dims'.")
+                
                 if points:
                     self.code.append(f"  ; Dims: {dims}")
-                    # Function with local scale variable (set to default)
-                    self.code.append(f"  (defun draw-barshape-{name} (base_pt / pt x y sc)")
+                    
+                    # Prepare local variables string for defun
+                    # e.g. (base_pt / pt x y sc L h)
+                    local_vars_list = ['pt', 'x', 'y', 'sc']
+                    local_vars_list.extend(dims.keys())
+                    local_vars_str = " ".join(local_vars_list)
+                    
+                    self.code.append(f"  (defun draw-barshape-{name} (base_pt / {local_vars_str})")
                     self.code.append("    (setq sc 0.05)  ; Scale: 0.05 = fit ~1000mm shapes in ~50mm cells")
+
+                    # Initialize local dims
+                    if dims:
+                        self.code.append(f"    ; Initialize local dims")
+                        for d_name, d_expr in dims.items():
+                            lisp_expr = self._convert_expr_to_lisp(d_expr)
+                            self.code.append(f"    (setq {d_name} {lisp_expr})")
 
                     # Switch to rebar layer
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"rebar\" \"\")")
@@ -1530,6 +1933,7 @@ class AutoLISPGenerator:
                         x_expr = self._convert_expr_to_lisp(pt[0])
                         y_expr = self._convert_expr_to_lisp(pt[1])
                         # Apply scale to coordinates relative to base point
+                        # Use list to construct point (x y) to ensure float evaluation
                         self.code.append(f"    (setq x (+ (car base_pt) (* sc {x_expr})))")
                         self.code.append(f"    (setq y (+ (cadr base_pt) (* sc {y_expr})))")
                         self.code.append(f"    (command (list x y))")
@@ -1724,8 +2128,8 @@ class AutoLISPGenerator:
             
             # Get paper dimensions
             w, h = paper_sizes.get(size, (420, 297))
-            self.code.append(f"  (setq sheet_{name}_width {w}.0)")
-            self.code.append(f"  (setq sheet_{name}_height {h}.0)")
+            self.code.append(f"  (setq sheet_{name}_width {float(w)})")
+            self.code.append(f"  (setq sheet_{name}_height {float(h)})")
             
             # Parse scale (e.g., "1:50" -> 0.02)
             scale_factor = 1.0
@@ -1768,6 +2172,104 @@ class AutoLISPGenerator:
                         # TODO: Implement view rendering (sketches inside views)
                         self.code.append(f"  ; (View placement {pname} not fully implemented)")
             
+            self.code.append("")
+        
+        self.code.append("")
+    
+    def _generate_barshape_layouts(self):
+        """生成钢筋大样图布局代码 - freeform grid placement with labels and annotations"""
+        if not self.parser.barshape_layouts:
+            return
+        
+        self.code.append("  ; Barshape Layouts (freeform grid placement)")
+        
+        for name, layout in self.parser.barshape_layouts.items():
+            title = layout.get('title', '')
+            grid = layout.get('grid', (3, 3))
+            cell_size = layout.get('cell_size', (100, 150))
+            origin = layout.get('origin', (0, 0))
+            placements = layout.get('placements', [])
+            
+            self.code.append(f"  ; --- Barshape Layout: {name} ---")
+            
+            # Calculate total dimensions
+            total_w = grid[0] * cell_size[0]
+            total_h = grid[1] * cell_size[1]
+            
+            # Draw title at top if specified
+            if title:
+                title_y = origin[1] + 20  # 20mm above origin
+                title_x = origin[0] + total_w / 2
+                self.code.append(f"  (command \"._-LAYER\" \"_S\" \"text\" \"\")")
+                self.code.append(f"  (command \"._MTEXT\" (list {title_x} {title_y} 0.0) \"_J\" \"_MC\" \"_H\" 8 \"_W\" {total_w} \"{title}\" \"\")")
+            
+            # Generate drawing function for this layout
+            self.code.append(f"  (defun draw-layout-{name} (/ x y cell_w cell_h base_pt label_pt note_pt)")
+            self.code.append(f"    (setq cell_w {cell_size[0]})")
+            self.code.append(f"    (setq cell_h {cell_size[1]})")
+            self.code.append("")
+            
+            for p in placements:
+                shape = p.get('shape', '')
+                col = p.get('col', 0)
+                row = p.get('row', 0)
+                label = p.get('label', '')
+                note = p.get('note', '')
+                
+                # Calculate position for this cell
+                # Origin at top-left, Y decreases downward
+                # Cell center for shape placement
+                self.code.append(f"    ; Placement: {shape} at ({col}, {row})")
+                self.code.append(f"    (setq x (+ {origin[0]} (* {col} cell_w) (* 0.5 cell_w)))")
+                self.code.append(f"    (setq y (- {origin[1]} (* {row} cell_h) (* 0.5 cell_h)))")
+                self.code.append(f"    (setq base_pt (list x (- y 5) 0.0))")
+                
+                # Draw label above shape
+                if label:
+                    self.code.append(f"    ; Label: {label}")
+                    self.code.append(f"    (setq label_pt (list x (+ y 50) 0.0))")
+                    self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" 5 \"_W\" (- cell_w 10) \"{label}\" \"\")")
+                
+                # Draw the barshape (using a larger scale for standalone display)
+                if shape and shape in self.parser.barshapes:
+                    self.code.append(f"    ; Draw shape: {shape}")
+                    # Use a larger scale (0.3) for standalone display vs 0.05 for table cells
+                    self.code.append(f"    (draw-barshape-{shape} base_pt)")
+                
+                # Draw note below shape
+                if note:
+                    self.code.append(f"    ; Note: {note}")
+                    self.code.append(f"    (setq note_pt (list x (- y 60) 0.0))")
+                    self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" 3.5 \"_W\" (- cell_w 10) \"{note}\" \"\")")
+                
+                # Draw custom annotations
+                annotations = p.get('annotations', [])
+                if annotations:
+                    self.code.append(f"    ; Custom Annotations")
+                    for ann in annotations:
+                        text = ann.get('text', '')
+                        at_x, at_y = ann.get('at', (0, 0))
+                        layer = ann.get('layer', 'text')
+                        angle = ann.get('angle', 0)
+                        
+                        if text:
+                            # Calculate absolute position relative to cell shape origin
+                            self.code.append(f"    (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
+                            self.code.append(f"    (setq ann_pt (list (+ (car base_pt) {at_x}) (+ (cadr base_pt) {at_y}) 0.0))")
+                            # Use Middle Center justification
+                            if angle != 0:
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" 3.5 \"_W\" 0 \"{text}\" \"\")")
+                            else:
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" 3.5 \"_W\" 0 \"{text}\" \"\")")
+                            
+                self.code.append("")
+            
+            self.code.append(f"  )")
+            
+            # Call the layout function to render
+            self.code.append(f"  (draw-layout-{name})")
             self.code.append("")
         
         self.code.append("")
@@ -1821,16 +2323,18 @@ class AutoLISPGenerator:
 
 def main():
     """主函数"""
-    if len(sys.argv) < 2:
-        print("Usage: python pcad_to_autolisp.py <input.pcad> [output.lsp]")
-        sys.exit(1)
+    parser_arg = argparse.ArgumentParser(description='P-CAD to AutoLISP Transpiler')
+    parser_arg.add_argument('input', help='Input P-CAD file (.pcad)')
+    parser_arg.add_argument('output', nargs='?', help='Output AutoLISP file (.lsp). Defaults to input name with .lsp extension.')
     
-    input_file = Path(sys.argv[1])
+    args = parser_arg.parse_args()
+    
+    input_file = Path(args.input)
     if not input_file.exists():
         print(f"Error: File not found: {input_file}")
         sys.exit(1)
     
-    output_file = Path(sys.argv[2]) if len(sys.argv) > 2 else input_file.with_suffix('.lsp')
+    output_file = Path(args.output) if args.output else input_file.with_suffix('.lsp')
     
     # Read P-CAD file
     with open(input_file, 'r', encoding='utf-8') as f:
