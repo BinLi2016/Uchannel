@@ -21,19 +21,22 @@ TEXT_FONT = "fsdb_e.shx,cadhzf.shx"  # SHX font with big font
 TEXT_WIDTH_FACTOR = 0.70              # Width factor for text
 
 # Text Heights (in drawing units, typically mm)
-LABEL_TEXT_HEIGHT = 40                # Height for label text
-TABLE_CELL_TEXT_HEIGHT = 40           # Height for table cell text
-DIM_TEXT_HEIGHT = 40                  # Height for dimension text (DIMTXT)
-DEFAULT_TEXT_SIZE = 40                # Default text size (TEXTSIZE)
+LABEL_TEXT_HEIGHT = 10                # Height for label text
+TABLE_CELL_TEXT_HEIGHT = 10           # Height for table cell text
+DIM_TEXT_HEIGHT = 10                  # Height for dimension text (DIMTXT)
+DEFAULT_TEXT_SIZE = 10                # Default text size (TEXTSIZE)
 
 # Barshape Layout Text Heights
-LAYOUT_TITLE_TEXT_HEIGHT = 16         # Height for barshape layout titles
+LAYOUT_TITLE_TEXT_HEIGHT = 10         # Height for barshape layout titles
 LAYOUT_LABEL_TEXT_HEIGHT = 10         # Height for barshape layout labels
-LAYOUT_NOTE_TEXT_HEIGHT = 7           # Height for barshape layout notes
-ANNOTATION_TEXT_HEIGHT = 7            # Height for custom annotations
+LAYOUT_NOTE_TEXT_HEIGHT = 10          # Height for barshape layout notes
+ANNOTATION_TEXT_HEIGHT = 10           # Height for custom annotations
 
 # Dimension Settings
 DIM_SCALE = 25.0                      # Dimension scale (DIMSCALE)
+
+# Hatch Settings
+HATCH_SCALE = 25.0                    # Default hatch pattern scale
 
 # =============================================================================
 
@@ -330,15 +333,18 @@ class PCADParser:
                             i += 1
                             continue
                         if p_line == '}': break
-                        # Handle multiple points on one line: (x1, y1) -> (x2, y2)
+                        # Handle multiple points on one line: (x1, y1):r=R -> (x2, y2)
                         p_line = re.sub(r'->', ' ', p_line)
-                        for p_match in re.finditer(r'\(([^)]+)\)', p_line):
-                            points.append(p_match.group(1).strip())
+                        # Pattern: (x, y) or (x, y):r=<radius>
+                        for p_match in re.finditer(r'\(([^)]+)\)(?::r=([^\s,;>\]]+))?', p_line):
+                            coord = p_match.group(1).strip()
+                            radius = p_match.group(2).strip() if p_match.group(2) else None
+                            points.append({'coord': coord, 'radius': radius})
                         i += 1
                     polylines.append({'name': polyline_name, 'closed': is_closed, 'points': points})
             
             # Line handling
-            elif 'line' in line:
+            elif line.startswith('line '):
                 # line Name (x1, y1) -> (x2, y2);
                 m = re.search(r'line\s+(\w+)\s+\(([^)]+)\)\s*->\s*\(([^)]+)\);', line)
                 if m:
@@ -348,8 +354,24 @@ class PCADParser:
                         'p2': m.group(3).strip()
                     })
             
+            # Circle handling: circle Name (cx, cy) r=radius;
+            elif line.startswith('circle '):
+                m = re.search(r'circle\s+(\w+)\s+\(([^)]+)\)\s+r\s*=\s*([^;]+);', line)
+                if m:
+                    if 'circles' not in locals():
+                        circles = []
+                    circles.append({
+                        'name': m.group(1),
+                        'center': m.group(2).strip(),
+                        'radius': m.group(3).strip()
+                    })
+            
             i += 1
-        self.sketches.append({'name': sketch_name, 'layer': layer, 'polylines': polylines, 'lines': lines})
+        
+        sketch_data = {'name': sketch_name, 'layer': layer, 'polylines': polylines, 'lines': lines}
+        if 'circles' in locals():
+            sketch_data['circles'] = circles
+        self.sketches.append(sketch_data)
         return i
     
     def _parse_region(self, start_idx: int) -> int:
@@ -375,11 +397,10 @@ class PCADParser:
         if boundary:
             self.regions.append({'name': region_name, 'boundary': boundary, 'hatch': hatch})
         return i
-    
     def _parse_dimension(self, start_idx: int) -> int:
-        """解析 dimension 块"""
+        """解析 dimension 块 - supports linear, vertical, radial, diameter"""
         i = start_idx
-        # dim linear { or dim vertical {
+        # dim linear { or dim vertical { or dim radial { or dim diameter {
         match = re.search(r'dim\s+(\w+)', self.lines[i])
         if not match:
             return i
@@ -387,9 +408,15 @@ class PCADParser:
         dim_type = match.group(1)
         i += 1
         
+        # Common properties
         from_point = None
         to_point = None
         text = None
+        # Radial/diameter specific
+        center = None
+        radius = None
+        diameter = None
+        angle = None
         
         while i < len(self.lines):
             line = self.lines[i].strip()
@@ -406,20 +433,60 @@ class PCADParser:
             if match:
                 to_point = match.group(1)
             
-            # text = "B";
+            # center = (x, y);
+            match = re.search(r'center\s*=\s*\(([^)]+)\);', line)
+            if match:
+                center = match.group(1)
+            
+            # radius = R1;
+            match = re.search(r'radius\s*=\s*([^;]+);', line)
+            if match:
+                radius = match.group(1).strip()
+            
+            # diameter = D1;
+            match = re.search(r'diameter\s*=\s*([^;]+);', line)
+            if match:
+                diameter = match.group(1).strip()
+            
+            # angle = 45;
+            match = re.search(r'angle\s*=\s*([^;]+);', line)
+            if match:
+                angle = match.group(1).strip()
+            
+            # text = "R125";
             match = re.search(r'text\s*=\s*"([^"]+)";', line)
             if match:
                 text = match.group(1)
             
             i += 1
         
-        if from_point and to_point and text:
-            self.dimensions.append({
-                'type': dim_type,
-                'from': from_point,
-                'to': to_point,
-                'text': text
-            })
+        # Store dimension based on type
+        if dim_type in ['linear', 'vertical', 'horizontal']:
+            if from_point and to_point:
+                self.dimensions.append({
+                    'type': dim_type,
+                    'from': from_point,
+                    'to': to_point,
+                    'text': text
+                })
+        elif dim_type == 'radial':
+            if center and radius:
+                self.dimensions.append({
+                    'type': 'radial',
+                    'center': center,
+                    'radius': radius,
+                    'angle': angle or '45',
+                    'text': text
+                })
+        elif dim_type == 'diameter':
+            if center and diameter:
+                self.dimensions.append({
+                    'type': 'diameter',
+                    'center': center,
+                    'diameter': diameter,
+                    'angle': angle or '45',
+                    'text': text
+                })
         
         return i
 
@@ -1282,10 +1349,64 @@ class AutoLISPGenerator:
         
         self._add_header()
         self._add_set_params_function()
+        self._generate_utility_functions()  # Generate helpers at global scope
         self._add_render_function()
         self._add_usage_comments()
         
         return '\n'.join(self.code)
+
+    def _estimate_dim_scale(self) -> float:
+        """根据绘图尺寸和 A4 纸张比例 (297mm) 估算 DIM_SCALE，并舍入到 5 的倍数"""
+        max_dim = 1000.0  # 默认值
+        
+        # 1. 检查 barshape_layouts 中的 cell_size
+        if hasattr(self.parser, 'barshape_layouts'):
+            for layout in self.parser.barshape_layouts.values():
+                cell_size = layout.get('cell_size', (1000, 1000))
+                grid = layout.get('grid', (1, 1))
+                
+                if isinstance(cell_size, (list, tuple)) and len(cell_size) >= 2:
+                    try:
+                        # Calculate total dimensions considering grid
+                        cols = 1
+                        rows = 1
+                        if isinstance(grid, (list, tuple)) and len(grid) >= 2:
+                            cols = float(grid[0])
+                            rows = float(grid[1])
+                            
+                        total_w = float(cell_size[0]) * cols
+                        total_h = float(cell_size[1]) * rows
+                        
+                        max_dim = max(max_dim, total_w, total_h)
+                    except: pass
+            
+        # 2. 检查 sketches 中的数值
+        if hasattr(self.parser, 'sketches'):
+            for sketch in self.parser.sketches:
+                for polyline in sketch['polylines']:
+                    for pt in polyline['points']:
+                        # Handle both old format (string) and new format (dict)
+                        if isinstance(pt, dict):
+                            pt_expr = pt.get('coord', '')
+                        else:
+                            pt_expr = pt
+                        nums = [float(n) for n in re.findall(r'[-+]?\d*\.?\d+', pt_expr)]
+                        if nums:
+                            max_dim = max(max_dim, max(map(abs, nums)))
+                        
+        # 3. 检查参数值
+        if hasattr(self.parser, 'params'):
+            for param in self.parser.params.values():
+                val = param.get('value', 0)
+                if isinstance(val, (int, float)):
+                    max_dim = max(max_dim, abs(float(val)))
+                
+        # 目标比例：(最大尺寸 / 297) 舍入到 5 的倍数
+        # dim-scale = ( (max bound size) / 297 ) round to 5's times
+        raw_scale = max_dim / 297.0
+        scale = round(raw_scale / 5.0) * 5.0
+        
+        return float(max(1.0, scale))
     
     def _add_header(self):
         """添加文件头"""
@@ -1345,7 +1466,10 @@ class AutoLISPGenerator:
         self.code.append("; =========================================")
         self.code.append("(defun c:PCAD_Render ()")
         self.code.append("  (setvar \"CMDECHO\" 0)")
-        self.code.append(f"  (setvar \"DIMSCALE\" {DIM_SCALE})")
+        
+        # Estimate dynamic DIMSCALE
+        self.estimated_scale = self._estimate_dim_scale()
+        self.code.append(f"  (setvar \"DIMSCALE\" {self.estimated_scale})")
         self.code.append(f"  (setvar \"DIMTXT\" {DIM_TEXT_HEIGHT})")
         self.code.append(f"  (setvar \"TEXTSIZE\" {DEFAULT_TEXT_SIZE})")
         self.code.append("")
@@ -1412,9 +1536,6 @@ class AutoLISPGenerator:
         # Generate barshapes
         self._generate_barshapes()
         
-        # Generate utility functions
-        self._generate_utility_functions()
-        
         # Generate tables
         self._generate_tables()
         
@@ -1455,7 +1576,7 @@ class AutoLISPGenerator:
 
         # Handle math functions: sin(), cos(), tan(), sqrt(), abs(), max(), min(), floor(), fix()
         # "fix" in AutoLISP is truncation (like floor but towards zero for negatives, or just int conversion)
-        math_funcs = ['sin', 'cos', 'tan', 'sqrt', 'abs', 'max', 'min', 'floor', 'fix']
+        math_funcs = ['sin', 'cos', 'tan', 'atan', 'asin', 'acos', 'atan2', 'sqrt', 'abs', 'max', 'min', 'floor', 'fix']
         
         # Helper to find matching closing parenthesis
         def find_closing_paren(s, start):
@@ -1498,6 +1619,17 @@ class AutoLISPGenerator:
                 if func in ['sin', 'cos', 'tan']:
                     if len(lisp_args) == 1:
                         return f"({func} (* {lisp_args[0]} (/ pi 180.0)))"
+                
+                # Special handling for inverse trig (radians to degrees)
+                if func in ['atan', 'asin', 'acos']:
+                    if len(lisp_args) == 1:
+                        return f"(* ({func} {lisp_args[0]}) (/ 180.0 pi))"
+                
+                # Special handling for atan2 (radians to degrees)
+                if func == 'atan2':
+                    if len(lisp_args) == 2:
+                        # AutoLISP atan takes (y [x])
+                        return f"(* (atan {lisp_args[0]} {lisp_args[1]}) (/ 180.0 pi))"
                 
                 # Special handling for pow(b, e) -> (expt b e)
                 if func == 'pow': # Not in list above but captured if we add it? No "pow" is not in math_funcs list yet.
@@ -1654,7 +1786,7 @@ class AutoLISPGenerator:
 
     
     def _generate_sketches(self):
-        """生成 sketch (polyline) 代码 - 使用 entmake 创建 LWPOLYLINE"""
+        """生成 sketch (polyline) 代码 - 使用 entmake 创建 LWPOLYLINE with bulge support"""
         for sketch in self.parser.sketches:
             self.code.append(f"  ; Sketch: {sketch['name']}")
             self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{sketch['layer']}\" \"\")")
@@ -1663,12 +1795,20 @@ class AutoLISPGenerator:
                 # Use unique prefix for each polyline
                 var_prefix = f"{sketch['name']}_{polyline['name']}"
                 
-                # Collect point expressions
-                point_exprs = []
-                for point_expr in polyline['points']:
-                    if point_expr.strip().startswith('//'):
+                # Collect point data (coord + radius)
+                point_data = []
+                for pt in polyline['points']:
+                    # Handle both old format (string) and new format (dict)
+                    if isinstance(pt, dict):
+                        coord_str = pt['coord']
+                        radius = pt.get('radius')
+                    else:
+                        coord_str = pt
+                        radius = None
+                    
+                    if coord_str.strip().startswith('//'):
                         continue
-                    x_expr, y_expr = self._parse_point_expr(point_expr)
+                    x_expr, y_expr = self._parse_point_expr(coord_str)
                     # Handle 't' variable specially
                     if 't' in x_expr and x_expr != 't':
                         x_expr = x_expr.replace(' t ', ' t_param ').replace('(t)', '(t_param)')
@@ -1678,18 +1818,49 @@ class AutoLISPGenerator:
                         x_expr = 't_param'
                     if y_expr == 't':
                         y_expr = 't_param'
-                    point_exprs.append((x_expr, y_expr))
-                
-                if point_exprs:
-                    # Build LWPOLYLINE using entmake
-                    # This creates the polyline directly without command-line issues
-                    closed_flag = 1 if polyline['closed'] else 0
                     
-                    self.code.append(f"  ; Create LWPOLYLINE for {var_prefix}")
+                    # Convert radius expression if present
+                    radius_lisp = self._convert_expr_to_lisp(radius) if radius else None
+                    point_data.append({'x': x_expr, 'y': y_expr, 'radius': radius_lisp})
+                
+                if point_data:
+                    # Build LWPOLYLINE using entmake with bulge support
+                    closed_flag = 1 if polyline['closed'] else 0
+                    n_pts = len(point_data)
+                    
+                    self.code.append(f"  ; Create LWPOLYLINE for {var_prefix} with arc support")
+                    
+                    # Build points and bulges lists
                     self.code.append(f"  (setq pts_{var_prefix} (list")
-                    for i, (x_expr, y_expr) in enumerate(point_exprs):
-                        self.code.append(f"    (list {x_expr} {y_expr})")
+                    for pd in point_data:
+                        self.code.append(f"    (list {pd['x']} {pd['y']})")
                     self.code.append(f"  ))")
+                    
+                    # Build bulges list - bulge is applied to vertex BEFORE the arc
+                    # For a corner at vertex i with radius R, the bulge at vertex (i-1) defines the arc
+                    self.code.append(f"  (setq bulges_{var_prefix} (list")
+                    for i, pd in enumerate(point_data):
+                        # Check if NEXT vertex has a radius (meaning arc from current to next)
+                        next_idx = (i + 1) % n_pts
+                        if next_idx < n_pts or polyline['closed']:
+                            next_pd = point_data[next_idx] if next_idx < n_pts else point_data[0]
+                            if next_pd['radius']:
+                                # Bulge will be computed at runtime
+                                self.code.append(f"    'CALC  ; Arc to vertex {next_idx}")
+                            else:
+                                self.code.append(f"    0.0")
+                        else:
+                            self.code.append(f"    0.0")
+                    self.code.append(f"  ))")
+                    
+                    # Generate bulge calculation function call
+                    self.code.append(f"  (setq bulges_{var_prefix} (pcad-calc-bulges pts_{var_prefix} (list")
+                    for pd in point_data:
+                        if pd['radius']:
+                            self.code.append(f"    {pd['radius']}")
+                        else:
+                            self.code.append(f"    0.0")
+                    self.code.append(f"  ) {'T' if polyline['closed'] else 'nil'}))")
                     
                     # Use entmake to create LWPOLYLINE
                     self.code.append(f"  (setq ent_data_{var_prefix} (list")
@@ -1697,17 +1868,21 @@ class AutoLISPGenerator:
                     self.code.append(f"    '(100 . \"AcDbEntity\")")
                     self.code.append(f"    (cons 8 \"{sketch['layer']}\")")
                     self.code.append(f"    '(100 . \"AcDbPolyline\")")
-                    self.code.append(f"    (cons 90 {len(point_exprs)})")
+                    self.code.append(f"    (cons 90 {n_pts})")
                     self.code.append(f"    (cons 70 {closed_flag})")
                     self.code.append(f"  ))")
                     
-                    # Add vertices
+                    # Add vertices with bulge values
+                    self.code.append(f"  (setq i 0)")
                     self.code.append(f"  (foreach pt pts_{var_prefix}")
+                    self.code.append(f"    (setq b (nth i bulges_{var_prefix}))")
                     self.code.append(f"    (setq ent_data_{var_prefix}")
                     self.code.append(f"      (append ent_data_{var_prefix}")
-                    self.code.append(f"        (list (cons 10 (list (car pt) (cadr pt) 0.0)))")
+                    self.code.append(f"        (list (cons 10 (list (car pt) (cadr pt) 0.0))")
+                    self.code.append(f"              (cons 42 b))")
                     self.code.append(f"      )")
                     self.code.append(f"    )")
+                    self.code.append(f"    (setq i (1+ i))")
                     self.code.append(f"  )")
                     
                     # Create the entity
@@ -1724,7 +1899,19 @@ class AutoLISPGenerator:
                     p2_x, p2_y = self._parse_point_expr(line['p2'])
                     self.code.append(f"  (command \"._LINE\" (list {p1_x} {p1_y} 0.0) (list {p2_x} {p2_y} 0.0) \"\")")
             
+            # Generate code for circles in the sketch
+            if 'circles' in sketch:
+                for circle in sketch['circles']:
+                    cx, cy = self._parse_point_expr(circle['center'])
+                    radius_expr = self._convert_expr_to_lisp(circle['radius'])
+                    self.code.append(f"  ; Circle: {circle['name']}")
+                    self.code.append(f"  (command \"._CIRCLE\" (list {cx} {cy} 0.0) {radius_expr})")
+                    # Save entity reference
+                    ent_var_name = f"sketch_{sketch['name']}_{circle['name']}"
+                    self.code.append(f"  (setq {ent_var_name} (entlast))")
+            
             self.code.append("")
+
     
     def _parse_point_expr(self, point_expr: str) -> Tuple[str, str]:
         """解析点表达式，返回 (x_expr, y_expr)"""
@@ -1780,7 +1967,7 @@ class AutoLISPGenerator:
                 hatch_style_name = region.get('hatch', 'concrete')
                 hatch_style = self.parser.hatch_styles.get(hatch_style_name, {})
                 pattern = hatch_style.get('pattern', 'ANSI37')
-                scale = 25.0 # Set hatch pattern scale to 25 as requested
+                scale = getattr(self, 'estimated_scale', HATCH_SCALE)
                 angle = hatch_style.get('angle', 0)
                 
                 # Create hatch from last entity (the polyline)
@@ -1796,6 +1983,10 @@ class AutoLISPGenerator:
                 # Use mapped pattern or fallback to ANSI31 (most universal)
                 mapped_pattern = pattern_map.get(pattern_upper, 'ANSI31')
                 
+                # ANSI patterns have built-in angles (ANSI31 is 45°), so reset angle to 0
+                if mapped_pattern.startswith('ANSI'):
+                    angle = 0
+                
                 self.code.append(f"  ; Create hatch from sketch: {sketch_name}")
                 
                 # Try to use specific polyline if specified in region, else use the last one in the sketch
@@ -1808,55 +1999,112 @@ class AutoLISPGenerator:
                 # For safety, we can wrap in 'if' check in LISP or assumes it exists
                 # Or fallback to entlast if using old logic? NO, old logic is broken.
                 
-                # HATCH command syntax: HATCH _P pattern_name scale angle _S entity "" ""
+                # HATCH command: Use -BHATCH for better compatibility
+                # Set hatch pattern properties via system variables first, then apply
                 self.code.append(f"  (if (boundp '{ent_var_name})")
-                self.code.append(f"    (command \"._HATCH\" \"_P\" \"{mapped_pattern}\" \"{scale}\" \"{angle}\" \"_S\" {ent_var_name} \"\" \"\")")
+                self.code.append(f"    (progn")
+                self.code.append(f"      (setvar \"HPNAME\" \"{mapped_pattern}\")")
+                self.code.append(f"      (setvar \"HPSCALE\" {scale})")
+                self.code.append(f"      (setvar \"HPANG\" (* {angle} (/ pi 180.0)))")
+                self.code.append(f"      (command \"._-BHATCH\" \"_S\" {ent_var_name} \"\" \"\")")
+                self.code.append(f"    )")
                 self.code.append(f"    (princ \"\\nWarning: Boundary entity {ent_var_name} not found for region {region['name']}\\n\")")
                 self.code.append("  )")
             
             self.code.append("")
     
     def _generate_dimensions(self):
-        """生成尺寸标注代码"""
+        """生成尺寸标注代码 - supports linear, vertical, radial, diameter"""
         for dim in self.parser.dimensions:
             dim_type = dim['type']
-            from_expr = dim['from']
-            to_expr = dim['to']
-            text = dim['text']
             
-            from_x, from_y = self._parse_point_expr(from_expr)
-            to_x, to_y = self._parse_point_expr(to_expr)
-            
-            self.code.append(f"  ; Dimension: {text}")
             self.code.append(f"  (command \"._-LAYER\" \"_S\" \"dim\" \"\")")
             
-            self.code.append(f"  (setq p1 (list {from_x} {from_y} 0.0))")
-            self.code.append(f"  (setq p2 (list {to_x} {to_y} 0.0))")
+            if dim_type in ['linear', 'vertical', 'horizontal']:
+                from_expr = dim['from']
+                to_expr = dim['to']
+                text = dim.get('text')
+                
+                from_x, from_y = self._parse_point_expr(from_expr)
+                to_x, to_y = self._parse_point_expr(to_expr)
+                
+                self.code.append(f"  ; Dimension: {text or 'auto'}")
+                self.code.append(f"  (setq p1 (list {from_x} {from_y} 0.0))")
+                self.code.append(f"  (setq p2 (list {to_x} {to_y} 0.0))")
+                
+                if dim_type == 'linear':
+                    self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
+                    self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
+                    self.code.append(f"  (setq p3 (list mid_x (+ mid_y 100) 0.0))")
+                    self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
+                elif dim_type == 'vertical':
+                    self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
+                    self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
+                    self.code.append(f"  (setq p3 (list (+ mid_x 100) mid_y 0.0))")
+                    self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
+                else:
+                    self.code.append(f"  (setq p3 (list (+ {from_x} 50) (+ {from_y} 50) 0.0))")
+                    self.code.append(f"  (command \"._DIMALIGNED\" p1 p2 p3)")
+                
+                self.code.append(f"  (setq ent (entlast))")
+                if text:
+                    self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{text}\" ent \"\")")
             
-            # Use appropriate dimension command based on type
-            if dim_type == 'linear':
-                # DIMLINEAR for horizontal measurement
-                # p3 should be positioned offset from midpoint, perpendicular to the line
-                self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
-                self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
-                # Offset dimension line perpendicular (vertical offset for horizontal dim)
-                self.code.append(f"  (setq p3 (list mid_x (+ mid_y 100) 0.0))")
-                self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
-            elif dim_type == 'vertical':
-                # DIMLINEAR with rotation for vertical measurement
-                self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
-                self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
-                # Offset dimension line perpendicular (horizontal offset for vertical dim)
-                self.code.append(f"  (setq p3 (list (+ mid_x 100) mid_y 0.0))")
-                self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
-            else:
-                # DIMALIGNED for oblique/aligned dimensions
-                self.code.append(f"  (setq p3 (list (+ {from_x} 50) (+ {from_y} 50) 0.0))")
-                self.code.append(f"  (command \"._DIMALIGNED\" p1 p2 p3)")
+            elif dim_type == 'radial':
+                center_expr = dim['center']
+                radius_expr = dim['radius']
+                angle_expr = dim.get('angle', '45')
+                text = dim.get('text')
+                
+                center_x, center_y = self._parse_point_expr(center_expr)
+                radius_lisp = self._convert_expr_to_lisp(radius_expr)
+                angle_lisp = self._convert_expr_to_lisp(angle_expr)
+                
+                # Use MTEXT-based leader annotation for radial dimensions
+                # This avoids creating a temporary circle that may not render correctly
+                self.code.append(f"  ; Radial Dimension: {text or 'R'}")
+                self.code.append(f"  (setq center_pt (list {center_x} {center_y} 0.0))")
+                self.code.append(f"  (setq rad_val {radius_lisp})")
+                self.code.append(f"  (setq ang_rad (* {angle_lisp} (/ pi 180.0)))")
+                self.code.append(f"  ; Calculate arc point on the circle at specified angle")
+                self.code.append(f"  (setq arc_pt (list (+ {center_x} (* rad_val (cos ang_rad)))")
+                self.code.append(f"                     (+ {center_y} (* rad_val (sin ang_rad))) 0.0))")
+                self.code.append(f"  ; Calculate leader endpoint (outside the arc)")
+                self.code.append(f"  (setq leader_pt (list (+ {center_x} (* (* rad_val 1.3) (cos ang_rad)))")
+                self.code.append(f"                        (+ {center_y} (* (* rad_val 1.3) (sin ang_rad))) 0.0))")
+                self.code.append(f"  ; Draw leader line from arc point to text location")
+                self.code.append(f"  (command \"._LINE\" arc_pt leader_pt \"\")")
+                # Add text at leader end
+                dim_text = text if text else f"R{{{radius_lisp}}}"
+                self.code.append(f"  (command \"._MTEXT\" leader_pt \"_J\" \"_ML\" \"_H\" (* (getvar \"DIMSCALE\") {DIM_TEXT_HEIGHT}) \"_W\" 0 \"{dim_text}\" \"\")")
+
             
-            self.code.append(f"  (setq ent (entlast))")
-            if text:
-                self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{text}\" ent \"\")")
+            elif dim_type == 'diameter':
+                center_expr = dim['center']
+                diameter_expr = dim['diameter']
+                angle_expr = dim.get('angle', '45')
+                text = dim.get('text')
+                
+                center_x, center_y = self._parse_point_expr(center_expr)
+                diameter_lisp = self._convert_expr_to_lisp(diameter_expr)
+                angle_lisp = self._convert_expr_to_lisp(angle_expr)
+                
+                self.code.append(f"  ; Diameter Dimension: {text or 'D'}")
+                self.code.append(f"  (setq center_pt (list {center_x} {center_y} 0.0))")
+                self.code.append(f"  (setq dia_val {diameter_lisp})")
+                self.code.append(f"  (setq rad_val (/ dia_val 2.0))")
+                self.code.append(f"  (setq ang_rad (* {angle_lisp} (/ pi 180.0)))")
+                self.code.append(f"  (setq arc_pt (list (+ {center_x} (* rad_val (cos ang_rad)))")
+                self.code.append(f"                     (+ {center_y} (* rad_val (sin ang_rad))) 0.0))")
+                self.code.append(f"  (setq leader_pt (list (+ {center_x} (* (* rad_val 1.5) (cos ang_rad)))")
+                self.code.append(f"                        (+ {center_y} (* (* rad_val 1.5) (sin ang_rad))) 0.0))")
+                self.code.append(f"  (command \"._CIRCLE\" center_pt rad_val)")
+                self.code.append(f"  (setq circ_ent (entlast))")
+                self.code.append(f"  (command \"._DIMDIAMETER\" arc_pt leader_pt)")
+                if text:
+                    self.code.append(f"  (setq ent (entlast))")
+                    self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{text}\" ent \"\")")
+                self.code.append(f"  (entdel circ_ent)")
             
             self.code.append("")
 
@@ -1969,12 +2217,13 @@ class AutoLISPGenerator:
                     has_fillets = any(seg.get('radius') for seg in parsed_segments)
                     
                     # Prepare local variables string for defun
-                    local_vars_list = ['pt', 'x', 'y', 'sc', 'prev_x', 'prev_y', 'r']
+                    # Rename 'r' to 'seg_rad' to avoid shadowing global 'R' parameter
+                    local_vars_list = ['pt', 'x', 'y', 'sc', 'prev_x', 'prev_y', 'seg_rad']
                     local_vars_list.extend(dims.keys())
                     local_vars_str = " ".join(local_vars_list)
                     
-                    self.code.append(f"  (defun draw-barshape-{name} (base_pt / {local_vars_str})")
-                    self.code.append("    (setq sc 0.05)  ; Scale: 0.05 = fit ~1000mm shapes in ~50mm cells")
+                    self.code.append(f"  (defun draw-barshape-{name} (base_pt scale / {local_vars_str})")
+                    self.code.append("    (setq sc (if scale scale 1.0))")
 
                     # Initialize local dims
                     if dims:
@@ -1983,34 +2232,29 @@ class AutoLISPGenerator:
                             lisp_expr = self._convert_expr_to_lisp(d_expr)
                             self.code.append(f"    (setq {d_name} {lisp_expr})")
 
-                    # Switch to rebar layer
-                    self.code.append(f"    (command \"._-LAYER\" \"_S\" \"rebar\" \"\")")
-                    self.code.append(f"    (command \"._PLINE\")")
+                    self.code.append("    (setq pts_list '()")
+                    self.code.append("          rad_list '())")
                     
                     for i, seg in enumerate(parsed_segments):
                         pt = seg['point']
-                        radius = seg.get('radius')
+                        radius = seg.get('radius') or '0.0'
                         x_expr = self._convert_expr_to_lisp(pt[0])
                         y_expr = self._convert_expr_to_lisp(pt[1])
+                        r_expr = self._convert_expr_to_lisp(radius)
                         
-                        # Apply scale to coordinates relative to base point
                         self.code.append(f"    (setq x (+ (car base_pt) (* sc {x_expr})))")
                         self.code.append(f"    (setq y (+ (cadr base_pt) (* sc {y_expr})))")
-                        
-                        if radius:
-                            # Fillet at virtual corner - use AutoCAD PLINE arc option
-                            # For now, just add the point; full arc geometry requires more complex calculation
-                            # The 'A' option in PLINE creates arcs, but proper fillet requires tangent calculation
-                            r_expr = self._convert_expr_to_lisp(radius)
-                            self.code.append(f"    ; Fillet corner: r={radius}")
-                            self.code.append(f"    (setq r (* sc {r_expr}))")
-                            # For simplified rendering, just add the virtual point
-                            # TODO: Calculate actual arc tangent points for proper fillet geometry
-                            self.code.append(f"    (command (list x y))")
-                        else:
-                            self.code.append(f"    (command (list x y))")
+                        self.code.append(f"    (setq pts_list (append pts_list (list (list x y))))")
+                        self.code.append(f"    (setq rad_list (append rad_list (list (* sc {r_expr}))))")
                     
-                    self.code.append(f"    (command \"\")")
+                    # Check for closed loop: if first and last points are roughly the same
+                    first_pt = parsed_segments[0]['point']
+                    last_pt = parsed_segments[-1]['point']
+                    # Using string comparison of expressions for simplicity, assuming normalized
+                    is_closed = (first_pt[0] == last_pt[0] and first_pt[1] == last_pt[1])
+                    closed_val = "T" if is_closed else "nil"
+                    
+                    self.code.append(f"    (pcad-draw-pline-with-fillets pts_list rad_list {closed_val})")
                     
                     # Implement hook drawing logic (P-CAD v1.1 normative)
                     if hooks:
@@ -2073,8 +2317,8 @@ class AutoLISPGenerator:
             self.code.append(f"  ; Label: {text}")
             self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
             self.code.append(f"  (setq lbl_pt (list {x_lisp} {y_lisp} 0.0))")
-            # Use MTEXT with middle center justification
-            self.code.append(f"  (command \"._MTEXT\" lbl_pt \"_J\" \"_MC\" \"_H\" {LABEL_TEXT_HEIGHT} \"_W\" 0 \"{text}\" \"\")")
+            # Use MTEXT with middle center justification, applying DIMSCALE to height
+            self.code.append(f"  (command \"._MTEXT\" lbl_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LABEL_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
         
         self.code.append("")
 
@@ -2093,10 +2337,182 @@ class AutoLISPGenerator:
         self.code.append("    (if (and txt (/= txt \"\"))")
         self.code.append("      (progn")
         self.code.append("        (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-        # Table cell text height from global config
-        self.code.append(f"        (command \"._MTEXT\" cp \"_J\" \"_MC\" \"_H\" {TABLE_CELL_TEXT_HEIGHT} \"_W\" (* 0.9 w) txt \"\")")
+        # Table cell text height from global config, applying DIMSCALE
+        self.code.append(f"        (command \"._MTEXT\" cp \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {TABLE_CELL_TEXT_HEIGHT}) \"_W\" (* 0.9 w) txt \"\")")
         self.code.append("      )")
         self.code.append("    )")
+        self.code.append("  )")
+        self.code.append("")
+        self.code.append("  (defun pcad-smart-dim-arc (ent / obj midPt)")
+        self.code.append("    (vl-load-com)")
+        self.code.append("    (if (and ent (wcmatch (cdr (assoc 0 (entget ent))) \"ARC,CIRCLE\"))")
+        self.code.append("      (progn")
+        self.code.append("        (command \"._-LAYER\" \"_S\" \"dim\" \"\")")
+        self.code.append("        (setq obj (vlax-ename->vla-object ent))")
+        self.code.append("        (setq midPt (vlax-curve-getPointAtParam obj ")
+        self.code.append("                      (/ (+ (vlax-curve-getStartParam obj) ")
+        self.code.append("                            (vlax-curve-getEndParam obj)) ")
+        self.code.append("                         2.0)")
+        self.code.append("                    )")
+        self.code.append("        )")
+        self.code.append("        (command \"._DIMRADIUS\" (list ent midPt) midPt)")
+        self.code.append("      )")
+        self.code.append("    )")
+        self.code.append("  )")
+        self.code.append("")
+        
+        self.code.append("  ; pcad-draw-pline-with-fillets: Draws rebar shape with fillets using FILLET command")
+        self.code.append("  ; pts: list of (x y) points")
+        self.code.append("  ; radii: list of radii (same length as pts, use 0 for no fillet)")
+        self.code.append("  ; closed: T or nil")
+        self.code.append("  ; Approach: Draw LINE segments, store entities, then FILLET using entity-point pairs")
+        self.code.append("  (defun pcad-draw-pline-with-fillets (pts radii closed / i n r p0 p1 p2 lines ent1 ent2 sel1 sel2)")
+        self.code.append("    (command \"._-LAYER\" \"_S\" \"rebar\" \"\")")
+        self.code.append("    (setq n (length pts))")
+        self.code.append("    (setq lines '())")
+        self.code.append("    ")
+        self.code.append("    ; Step 1: Draw all LINE segments and store entity names")
+        self.code.append("    (setq i 0)")
+        self.code.append("    (while (< i (1- n))")
+        self.code.append("      (setq p0 (nth i pts))")
+        self.code.append("      (setq p1 (nth (1+ i) pts))")
+        self.code.append("      (command \"._LINE\" p0 p1 \"\")")
+        self.code.append("      (setq lines (append lines (list (entlast))))")
+        self.code.append("      (setq i (1+ i))")
+        self.code.append("    )")
+        self.code.append("    ")
+        self.code.append("    ; Step 2: Apply FILLET at each corner with non-zero radius")
+        self.code.append("    (setq i 1)")
+        self.code.append("    (while (< i (1- n))")
+        self.code.append("      (setq r (nth i radii))")
+        self.code.append("      (if (and r (> r 0.0))")
+        self.code.append("        (progn")
+        self.code.append("          ; Get the two LINE entities adjacent to this corner")
+        self.code.append("          (setq ent1 (nth (1- i) lines))  ; Line before corner")
+        self.code.append("          (setq ent2 (nth i lines))       ; Line after corner")
+        self.code.append("          ; Get the adjacent points for calculating midpoints")
+        self.code.append("          (setq p0 (nth (1- i) pts))  ; Point before corner")
+        self.code.append("          (setq p1 (nth i pts))       ; The corner point")
+        self.code.append("          (setq p2 (nth (1+ i) pts))  ; Point after corner")
+        self.code.append("          ; Calculate midpoints of each segment for pick points")
+        self.code.append("          (setq mid1 (mapcar '(lambda (a b) (/ (+ a b) 2.0)) p0 p1))")
+        self.code.append("          (setq mid2 (mapcar '(lambda (a b) (/ (+ a b) 2.0)) p1 p2))")
+        self.code.append("          ; Set fillet radius first")
+        self.code.append("          (command \"._FILLET\" \"_R\" r)")
+        self.code.append("          ; Apply fillet using entity-point pairs with midpoints")
+        self.code.append("          (command \"._FILLET\" (list ent1 mid1) (list ent2 mid2))")
+        self.code.append("          (pcad-smart-dim-arc (entlast))")
+        self.code.append("        )")
+        self.code.append("      )")
+        self.code.append("      (setq i (1+ i))")
+        self.code.append("    )")
+        self.code.append("    ")
+        self.code.append("    ; Step 3: Handle closing corner if closed")
+        self.code.append("    (if closed")
+        self.code.append("      (progn")
+        self.code.append("        (setq r (nth (1- n) radii)) ; Radius at the last point (which is same as first)")
+        self.code.append("        (if (and r (> r 0.0))")
+        self.code.append("          (progn")
+        self.code.append("            ; Fillet between last segment and first segment")
+        self.code.append("            (setq ent1 (last lines))      ; Last drawn line")
+        self.code.append("            (setq ent2 (car lines))       ; First drawn line")
+        self.code.append("            ")
+        self.code.append("            ; Points regarding the closing corner (last pt = first pt)")
+        self.code.append("            (setq p0 (nth (- n 2) pts))   ; Penultimate point")
+        self.code.append("            (setq p1 (nth (1- n) pts))    ; Last point (corner)")
+        self.code.append("            (setq p2 (nth 1 pts))         ; Second point (after corner)")
+        self.code.append("            ")
+        self.code.append("            ; Calculate midpoints")
+        self.code.append("            (setq mid1 (mapcar '(lambda (a b) (/ (+ a b) 2.0)) p0 p1))")
+        self.code.append("            (setq mid2 (mapcar '(lambda (a b) (/ (+ a b) 2.0)) p1 p2))")
+        self.code.append("            ")
+        self.code.append("            (command \"._FILLET\" \"_R\" r)")
+        self.code.append("            (command \"._FILLET\" (list ent1 mid1) (list ent2 mid2))")
+        self.code.append("            (pcad-smart-dim-arc (entlast))")
+        self.code.append("          )")
+        self.code.append("        )")
+        self.code.append("      )")
+        self.code.append("    )")
+        self.code.append("  )")
+        self.code.append("")
+        
+        # Add pcad-calc-bulges function for LWPOLYLINE arc support
+        self.code.append("  ; pcad-calc-bulges: Calculate bulge values for LWPOLYLINE arc segments")
+        self.code.append("  ; pts: list of (x y) points")
+        self.code.append("  ; radii: list of radii (same length as pts, 0 for no arc)")
+        self.code.append("  ; closed: T or nil")
+        self.code.append("  ;")
+        self.code.append("  ; CRITICAL: radius at vertex i means arc FROM vertex (i-1) TO vertex i")
+        self.code.append("  ; The bulge value must be assigned to vertex (i-1), the ARC START")
+        self.code.append("  ;")
+        self.code.append("  ; Bulge = sagitta / half_chord, where:")
+        self.code.append("  ;   chord = distance between arc start and arc end")
+        self.code.append("  ;   sagitta = R - sqrt(R² - half_chord²)")
+        self.code.append("  ;")
+        self.code.append("  (defun pcad-calc-bulges (pts radii closed / i n bulges r next_r p0 p1 chord half_chord sagitta bulge)")
+        self.code.append("    (setq n (length pts))")
+        self.code.append("    ; Initialize all bulges to 0")
+        self.code.append("    (setq bulges '())")
+        self.code.append("    (repeat n (setq bulges (append bulges (list 0.0))))")
+        self.code.append("    ")
+        self.code.append("    ; For each vertex i, check if the NEXT vertex (i+1) has a radius")
+        self.code.append("    ; If yes, that defines an arc from i to i+1, so bulge goes at vertex i")
+        self.code.append("    (setq i 0)")
+        self.code.append("    (while (< i n)")
+        self.code.append("      (setq next_idx (1+ i))")
+        self.code.append("      (if (>= next_idx n)")
+        self.code.append("        (if closed (setq next_idx 0) (setq next_idx nil))")
+        self.code.append("      )")
+        self.code.append("      (if next_idx")
+        self.code.append("        (progn")
+        self.code.append("          (setq next_r (nth next_idx radii))")
+        self.code.append("          ; Check if radius is non-zero (can be negative for CW arc)")
+        self.code.append("          (if (and next_r (/= next_r 0.0))")
+        self.code.append("            (progn")
+        self.code.append("              (setq abs_r (abs next_r))")
+        self.code.append("              (setq is_cw (< next_r 0))")
+        self.code.append("              ")
+        self.code.append("              ; Arc from vertex i to vertex next_idx")
+        self.code.append("              (setq p0 (nth i pts))")
+        self.code.append("              (setq p1 (nth next_idx pts))")
+        self.code.append("              (setq chord (distance p0 p1))")
+        self.code.append("              (if (> chord 0.0)")
+        self.code.append("                (progn")
+        self.code.append("                  (setq half_chord (/ chord 2.0))")
+        self.code.append("                  (if (>= abs_r half_chord)")
+        self.code.append("                    (progn")
+        self.code.append("                      (setq sagitta (- abs_r (sqrt (- (* abs_r abs_r) (* half_chord half_chord)))))")
+        self.code.append("                      (setq bulge (/ sagitta half_chord))")
+        self.code.append("                      ; If neg radius (CW), negate the bulge")
+        self.code.append("                      (if is_cw (setq bulge (- bulge)))")
+        self.code.append("                      ")
+        self.code.append("                      ; Assign bulge to vertex i (arc start)")
+        self.code.append("                      (setq bulges (subst-nth i bulge bulges))")
+        self.code.append("                    )")
+        self.code.append("                  )")
+        self.code.append("                )")
+        self.code.append("              )")
+        self.code.append("            )")
+        self.code.append("          )")
+        self.code.append("        )")
+        self.code.append("      )")
+        self.code.append("      (setq i (1+ i))")
+        self.code.append("    )")
+        self.code.append("    bulges")
+        self.code.append("  )")
+        self.code.append("")
+        self.code.append("  ; Helper: substitute nth element in list")
+        self.code.append("  (defun subst-nth (idx val lst / i result)")
+        self.code.append("    (setq result '())")
+        self.code.append("    (setq i 0)")
+        self.code.append("    (foreach item lst")
+        self.code.append("      (if (= i idx)")
+        self.code.append("        (setq result (append result (list val)))")
+        self.code.append("        (setq result (append result (list item)))")
+        self.code.append("      )")
+        self.code.append("      (setq i (1+ i))")
+        self.code.append("    )")
+        self.code.append("    result")
         self.code.append("  )")
         self.code.append("")
 
@@ -2195,11 +2611,9 @@ class AutoLISPGenerator:
                 self.code.append("            (draw-table-cell cell_pt cell_w cell_h \"\")")
                 self.code.append("            (setq shape_func (read (strcat \"draw-barshape-\" val)))")
                 self.code.append("            (if (and val (/= val \"\"))")
-                self.code.append("              (progn")
-                self.code.append("                (setq shape_pt (list (+ (car cell_pt) (* 0.5 cell_w)) (- (cadr cell_pt) (* 0.5 cell_h)) 0.0))")
-                self.code.append("                (eval (list shape_func (list 'quote shape_pt)))")
-
-                self.code.append("              )")
+                # Pass scale 0.05 for table cells
+                self.code.append("              ((eval shape_func) cell_pt 0.05)")
+                self.code.append("            )")
                 self.code.append("            )")
 
                 self.code.append("          )")
@@ -2311,10 +2725,10 @@ class AutoLISPGenerator:
             
             # Draw title at top if specified
             if title:
-                title_y = origin[1] + 20  # 20mm above origin
+                # Scale offset and height
                 title_x = origin[0] + total_w / 2
                 self.code.append(f"  (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                self.code.append(f"  (command \"._MTEXT\" (list {title_x} {title_y} 0.0) \"_J\" \"_MC\" \"_H\" {LAYOUT_TITLE_TEXT_HEIGHT} \"_W\" {total_w} \"{title}\" \"\")")
+                self.code.append(f"  (command \"._MTEXT\" (list {title_x} (+ {origin[1]} (* (getvar \"DIMSCALE\") 2.0)) 0.0) \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_TITLE_TEXT_HEIGHT}) \"_W\" {total_w} \"{title}\" \"\")")
             
             # Generate drawing function for this layout
             self.code.append(f"  (defun draw-layout-{name} (/ x y cell_w cell_h base_pt label_pt note_pt)")
@@ -2340,22 +2754,24 @@ class AutoLISPGenerator:
                 # Draw label above shape
                 if label:
                     self.code.append(f"    ; Label: {label}")
-                    self.code.append(f"    (setq label_pt (list x (+ y 50) 0.0))")
+                    # Scale offset and height
+                    self.code.append(f"    (setq label_pt (list x (+ y (* (getvar \"DIMSCALE\") 5.0)) 0.0))")
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" {LAYOUT_LABEL_TEXT_HEIGHT} \"_W\" (- cell_w 10) \"{label}\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_LABEL_TEXT_HEIGHT}) \"_W\" (- cell_w 10) \"{label}\" \"\")")
                 
                 # Draw the barshape (using a larger scale for standalone display)
                 if shape and shape in self.parser.barshapes:
                     self.code.append(f"    ; Draw shape: {shape}")
-                    # Use a larger scale (0.3) for standalone display vs 0.05 for table cells
-                    self.code.append(f"    (draw-barshape-{shape} base_pt)")
+                    # Pass scale 1.0 for layout drawings
+                    self.code.append(f"    (draw-barshape-{shape} base_pt 1.0)")
                 
                 # Draw note below shape
                 if note:
                     self.code.append(f"    ; Note: {note}")
-                    self.code.append(f"    (setq note_pt (list x (- y 60) 0.0))")
+                    # Scale offset and height
+                    self.code.append(f"    (setq note_pt (list x (- y (* (getvar \"DIMSCALE\") 6.0)) 0.0))")
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" {LAYOUT_NOTE_TEXT_HEIGHT} \"_W\" (- cell_w 10) \"{note}\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_NOTE_TEXT_HEIGHT}) \"_W\" (- cell_w 10) \"{note}\" \"\")")
                 
                 # Draw custom annotations
                 annotations = p.get('annotations', [])
@@ -2373,9 +2789,9 @@ class AutoLISPGenerator:
                             self.code.append(f"    (setq ann_pt (list (+ (car base_pt) {at_x}) (+ (cadr base_pt) {at_y}) 0.0))")
                             # Use Middle Center justification
                             if angle != 0:
-                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" {ANNOTATION_TEXT_HEIGHT} \"_W\" 0 \"{text}\" \"\")")
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
                             else:
-                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" {ANNOTATION_TEXT_HEIGHT} \"_W\" 0 \"{text}\" \"\")")
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
                             
                 self.code.append("")
             

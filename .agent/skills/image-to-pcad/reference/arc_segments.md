@@ -1,82 +1,63 @@
 # Arc Segments and Fillet Radius
 
-Reference for curved corners in P-CAD polylines and barshapes.
+Reference for curved lines in P-CAD.
 
 ---
 
-## Syntax
+## Two Modes of Operation
 
-Use the `:r=<radius>` suffix on **virtual intersection points**:
+P-CAD handles curves in two ways depending on the block type:
 
+1.  **Corner Fillets** (`barshape`): Rounds the intersection corner between two segments.
+2.  **Arc Segments** (`sketch`): Defines the segment itself as a curve.
+
+---
+
+## 1. Corner Fillets (Barshapes)
+
+Used primarily in `barshape` blocks to represent bent rebar corners.
+
+### Syntax
 ```
 (x, y):r=<radius>
 ```
+The point `(x, y)` is the **Virtual Intersection Point** (where the straight segments would meet).
 
-The actual arc is computed as a tangent fillet between adjacent segments.
-
----
-
-## Virtual Intersection Points
-
-The point `(x, y)` represents where adjacent straight segments **would meet if extended**.
-The arc is then calculated to smoothly connect the two segments with the given radius.
-
-```
-        Actual path with fillet
-              ╭──────
-             ╱
-            ╱
-           ╱
-──────────○ ← Virtual intersection point (x, y):r=R
-```
+### Behavior
+- The `r` value is the bend radius.
+- The transpiler uses the AutoCAD `FILLET` command.
+- The curve starts *before* the point and ends *after* it.
 
 ---
 
-## Examples
+## 2. Arc Segments (Sketches)
 
-### Polyline with Rounded Corners
+Used in `sketch` blocks (polylines) to define complex geometric boundaries.
+
+### Syntax
+```
+(x, y):r=<radius>
+```
+The point `(x, y)` is the **End Point** of the arc segment. The arc originates from the *previous* vertex.
+
+### Behavior
+- **Radius**: `r` defines the radius of the arc connecting `Previous_Point` to `Current_Point`.
+- **Direction**:
+    - **Positive (+R)**: Counter-Clockwise (CCW) arc.
+    - **Negative (-R)**: Clockwise (CW) arc.
+- **AutoCAD Mapping**: Uses `LWPOLYLINE` bulge values (Group Code 42).
+
+### Example: U-Channel
 
 ```pcad
-sketch Stadium layer=outline {
+sketch U_Section {
     polyline boundary closed {
-        (0, 0):r=R -> (W, 0):r=R -> (W, H):r=R -> (0, H):r=R;
+        // ... previous points ...
+        (W_inner/2, H) ->             // Start of arc
+        (0, y_bot):r=-R ->            // End of arc (CW direction towards bottom)
+        (-W_inner/2, H):r=-R ->       // End of next arc (CW direction towards top-left)
+        // ... next points ...
     }
-}
-```
-
-### Barshape with Mixed Radii
-
-```pcad
-barshape N_UBar {
-    type = custom;
-    segments = [
-        (0, H) -> 
-        (x1, H):r=R1 ->     // Upper radius
-        (x2, 0):r=R2 ->     // Lower radius
-        (x3, 0):r=R2 -> 
-        (x4, H):r=R1 -> 
-        (x5, H)
-    ];
-}
-```
-
-### Stadium Shape (Semicircular Ends)
-
-When `R = H/2`, you get perfect semicircular ends:
-
-```pcad
-params {
-    W = 770;
-    H = 220;
-    R = 110;  // R = H/2
-}
-
-barshape StadiumStirrup {
-    type = stirrup;
-    segments = [
-        (0, 0):r=R -> (W, 0):r=R 
-        -> (W, H):r=R -> (0, H):r=R
-    ];
 }
 ```
 
@@ -84,16 +65,13 @@ barshape StadiumStirrup {
 
 ## Geometry Semantics
 
-Given virtual intersection point P with adjacent segments S1 (incoming) and S2 (outgoing):
-
-1. Calculate tangent point T1 on S1 at distance R from P
-2. Calculate tangent point T2 on S2 at distance R from P
-3. The arc from T1 to T2 is tangent to both segments
-
-| Corner Angle | Tangent Distance |
-|--------------|------------------|
-| 90° | R |
-| Other θ | R × tan(θ/2) |
+| Feature | Corner Fillet (`barshape`) | Arc Segment (`sketch`) |
+| :--- | :--- | :--- |
+| **Point (x,y)** | Virtual Interaction Corner | Actual Segment End Point |
+| **Radius** | Fillet Radius | Segment Radius |
+| **Geometry** | Line -> Arc -> Line | Arc (from Prev to Curr) |
+| **Sign** | Always Positive | + = CCW, - = CW |
+| **CAD Implementation** | `FILLET` command | `LWPOLYLINE` Bulge |
 
 ---
 
@@ -101,6 +79,5 @@ Given virtual intersection point P with adjacent segments S1 (incoming) and S2 (
 
 | P-CAD | DXF/DWG |
 |-------|---------|
-| Point with `:r=R` | LWPOLYLINE vertex with bulge |
-| Semicircle (180°) | bulge = ±1.0 |
-| Quarter circle (90°) | bulge ≈ ±0.414 |
+| `sketch` Point `:r=R` | `LWPOLYLINE` vertex with calculated `bulge` |
+| `barshape` Point `:r=R` | `LINE` / `FILLET` / `LINE` sequence |

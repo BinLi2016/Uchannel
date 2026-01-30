@@ -11,6 +11,18 @@ Convert reinforced concrete drawings into P-CAD parametric code.
 
 ---
 
+## Assumptions & Interpretations
+
+> [!IMPORTANT]
+> **Geometric Curves**: 
+> - For **Sketches** (concrete outlines): Use Arc Segments with `:r=<radius>` syntax. Use negative radius for clockwise curves.
+> - For **Rebar** (barshapes): Use Corner Fillets with `:r=<radius>` syntax for bends.
+> - See [arc_segments.md](reference/arc_segments.md) for detailed syntax and direction rules.
+>
+> **Hidden Lines**: Dashed lines should be interpreted as geometric guides or hidden boundaries.
+
+---
+
 ## Quick Reference
 
 | Drawing Component | P-CAD Block | Reference |
@@ -41,6 +53,9 @@ Identify what components are present:
 1. Identify **variable dimensions** (H1, B2, L3) → `params` block
 2. Identify **computed values** (H3+50, B2-12) → `derive` block
 3. Identify **fixed constants** (21.6, 45.3) → Use as literals
+
+> [!NOTE]
+> **Units**: Always use `units mm;` for AutoCAD drawings. If the source image uses cm or m, convert all values to mm (multiply by 10 for cm, 1000 for m). This ensures consistent scaling and correct dimension display in AutoCAD.
 
 ### Step 3: Define Layers and Materials
 
@@ -110,9 +125,51 @@ barshape N1 {
 }
 ```
 
+> [!IMPORTANT]
+> **Visual Proportions**: When setting default values in the `params` block, always try to match the aspect ratio and relative scale of the original image. For example, if the bar in the image is 4x taller than it is wide, set `H=800` and `W=200` as defaults rather than generic `1000/1000` values. This ensures the first render is visually representative.
+
 > [!TIP]
-> **Arc Segments**: Use `:r=<radius>` for curved corners.
+> **Arc Segments**: Use `:r=<radius>` for curved corners in `barshape` blocks.
 > See [arc_segments.md](reference/arc_segments.md) for details.
+
+> [!IMPORTANT]
+> **Arcs in Structural Sketches**: Sketch polylines do not support `:r=` syntax.
+> For arc curves in structural sections, use **arc approximation** with derived intermediate points.
+> See [structural_examples.md](examples/structural_examples.md) for the U-channel example.
+
+### Arc Approximation Technique
+
+For circular arcs in structural sections (like U-channels), calculate intermediate points:
+
+```pcad
+params {
+    Ri = 2000;      // Arc radius
+    inner_x = 750;  // X-coordinate of arc endpoints
+    H = 1200;       // Height at arc endpoints
+}
+
+derive {
+    // Arc center is above the endpoints
+    arc_center_y = H + sqrt(Ri * Ri - inner_x * inner_x);
+    arc_bottom_y = arc_center_y - Ri;
+    
+    // Intermediate points for smooth approximation
+    x_mid = inner_x * 0.6;
+    y_mid = arc_center_y - sqrt(Ri * Ri - x_mid * x_mid);
+}
+
+sketch U_Section layer=outline {
+    polyline outer closed {
+        // ... start points ...
+        (inner_x, H) -> 
+        (x_mid, y_mid) ->      // Intermediate point
+        (0, arc_bottom_y) ->   // Arc bottom
+        (-x_mid, y_mid) ->     // Symmetric intermediate
+        (-inner_x, H) ->
+        // ... end points ...
+    }
+}
+```
 
 ---
 
@@ -123,6 +180,8 @@ barshape N1 {
 - [ ] Parameters from image captured in `params`/`derive`
 - [ ] Segment expressions use only `params`/`derive` values
 - [ ] Arc segments use `:r=<radius>` syntax for curves
+- [ ] Curves in sketches use arc approximation (intermediate points)
+- [ ] Hidden lines interpreted as geometric relations, not literal boundaries
 - [ ] Table matches schedule in image
 - [ ] Layers defined consistently
 - [ ] File transpiles without errors
