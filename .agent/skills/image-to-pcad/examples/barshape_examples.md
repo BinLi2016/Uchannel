@@ -167,6 +167,39 @@ barshape S_N7_1 {
 
 ---
 
+## Slanted Bar / Parallelogram (with Trig)
+
+Used for shapes with specific angles (e.g., 80° corner) or slanted edges.
+
+```pcad
+params {
+    W_base = 212;
+    H_side = 410;
+}
+
+derive {
+    W = W_base - 12;
+    S = H_side - 20;
+    // 10 degree tilt results in 80 degree corner (90-10=80)
+    dx = S * sin(10);
+    dy = S * cos(10);
+}
+
+barshape N_slanted {
+    type = custom;
+    segments = [
+        (-17, 0) ->          // Bottom-left tail
+        (W, 0) ->            // Bottom edge
+        (W + dx, dy) ->      // Right slanted side
+        (W + dx + 12.5, dy) -> // Top-right tail
+        (dx, dy) ->          // Top edge
+        (0, 0)               // Close to left side
+    ];
+}
+```
+
+---
+
 ## Coordinate System Conventions
 
 | Shape Type | Origin Placement | Segment Direction |

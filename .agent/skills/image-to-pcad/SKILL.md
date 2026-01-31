@@ -15,7 +15,7 @@ Convert reinforced concrete drawings into P-CAD parametric code.
 
 > [!IMPORTANT]
 > **Geometric Curves**: 
-> - For **Sketches** (concrete outlines): Use Arc Segments with `:r=<radius>` syntax. Use negative radius for clockwise curves.
+> - For **Sketches** (concrete outlines): Use Arc Segments with `:r=<radius>` syntax. Use **Positive R** for outward (convex) curves in CCW loops, **Negative R** for inward (concave).
 > - For **Rebar** (barshapes): Use Corner Fillets with `:r=<radius>` syntax for bends.
 > - See [arc_segments.md](reference/arc_segments.md) for detailed syntax and direction rules.
 >
@@ -57,11 +57,17 @@ Identify what components are present:
 > [!NOTE]
 > **Units**: Always use `units mm;` for AutoCAD drawings. If the source image uses cm or m, convert all values to mm (multiply by 10 for cm, 1000 for m). This ensures consistent scaling and correct dimension display in AutoCAD.
 
-### Step 3: Define Layers and Materials
-
-```pcad
-layers {
-    outline: #00FFFF, 0.25;
+60: ### Step 3: Define Layers and Materials
+61: 
+62: > [!IMPORTANT]
+63: > **Unit Normalization**: Hand-drawn sketches often mix units (cm, mm, m). 
+64: > **Rule**: Standardize everything to **mm** in the `params` block immediately.
+65: > - 400cm → `L = 4000;`
+66: > - 2.5m → `H = 2500;`
+67: 
+68: ```pcad
+69: layers {
+70:     outline: #00FFFF, 0.25;
     rebar:   #FF0000, 0.20;
     text:    #00FF00, 0.18;
     dim:     #00FFFF, 0.18;
@@ -78,7 +84,7 @@ Choose the appropriate block type:
 | Need | Block | Key Properties |
 |------|-------|----------------|
 | Concrete outline | `sketch` | `polyline closed` |
-| Filled section | `region` | `boundary`, `hatch` |
+| Filled section | `region` | `boundary`, `hatch`, `islands` |
 | Grid reinforcement | `mesh` | `region`, `spacing_x`, `spacing_y` |
 | Linear rebar | `bars` | `path`, `count`, `spacing` |
 | Rebar diagram | `barshape` | `segments`, `dims` |
@@ -103,12 +109,39 @@ barshape_layout Details {
 }
 ```
 
+
+### Step 6: Add Dimensions
+
+Use `dim` blocks to annotate geometry.
+
+> [!TIP]
+> **Align Dimension Lines**: To ensure professional alignment (baseline position), use the `offset` parameter.
+> - **Horizontal (`dim linear`)**: `offset` is vertical shift (+ up, - down).
+> - **Vertical (`dim vertical`)**: `offset` is horizontal shift (+ right, - left).
+> - **Rule**: Use the same `offset` value (e.g., `-500` or `H+500`) for all dimensions in the same row/column.
+
+```pcad
+// Example: Aligning bottom dimensions
+dim linear { from=(0,0); to=(L1,0); offset=-500; text="2400"; }
+dim linear { from=(L1,0); to=(L1+L2,0); offset=-500; }
+```
+
 ---
-
-## Critical Rules
-
-> [!WARNING]
-> **Variable Scoping**: Only use `params`/`derive` values in segment expressions.
+107: 
+108: ## Critical Rules
+109: 
+110: > [!CAUTION]
+111: > **No Inline Math in Sketches**: To prevent parser hangs (regex backtracking), **never** write expressions inside `sketch` or `polyline` coordinates. 
+112: > - ❌ `(L - cv, H - cv)` 
+113: > - ✅ Compute `pt_x = L - cv; pt_y = H - cv;` in `derive`, then use `(pt_x, pt_y)`.
+114: 
+115: > [!IMPORTANT]
+116: > **Semantic Interpretation**: 
+117: > - Identify engineering keywords: "Fan" (`扇形`), "Var" (`变量`), or formulas like `@ (L-cv)/20`.
+118: > - Do not just trace lines; use `derive` to generate the logic. For a "Fan", calculate the slope change per bar.
+119: 
+120: > [!WARNING]
+121: > **Variable Scoping**: Only use `params`/`derive` values in segment expressions.
 > Local `dims` variables cause `numberp: nil` errors!
 
 ```pcad
@@ -132,10 +165,12 @@ barshape N1 {
 > **Arc Segments**: Use `:r=<radius>` for curved corners in `barshape` blocks.
 > See [arc_segments.md](reference/arc_segments.md) for details.
 
-> [!IMPORTANT]
-> **Arcs in Structural Sketches**: Sketch polylines do not support `:r=` syntax.
-> For arc curves in structural sections, use **arc approximation** with derived intermediate points.
-> See [structural_examples.md](examples/structural_examples.md) for the U-channel example.
+> [!TIP]
+> **Arcs in Structural Sketches**: Sketch polylines **DO** support `:r=` syntax using `LWPOLYLINE` bulges.
+> - **Convex (Outward) Arcs**: Use `:r=+R` (Positive) for standard CCW loops.
+> - **Concave (Inward) Arcs**: Use `:r=-R` (Negative) for standard CCW loops.
+> - **Note**: For complex curves not representable by simple circular arcs, use arc approximation.
+> See [structural_examples.md](examples/structural_examples.md) for examples.
 
 ### Arc Approximation Technique
 
@@ -184,6 +219,7 @@ sketch U_Section layer=outline {
 - [ ] Hidden lines interpreted as geometric relations, not literal boundaries
 - [ ] Table matches schedule in image
 - [ ] Layers defined consistently
+- [ ] Dimensions aligned using consistent `offset` values
 - [ ] File transpiles without errors
 
 ---

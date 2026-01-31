@@ -45,6 +45,9 @@ The point `(x, y)` is the **End Point** of the arc segment. The arc originates f
 - **Direction**:
     - **Positive (+R)**: Counter-Clockwise (CCW) arc.
     - **Negative (-R)**: Clockwise (CW) arc.
+- **Closed Polyline Rule** (assuming CCW traversal):
+    - **Positive (+R)**: Convex corner (Bulges Outward).
+    - **Negative (-R)**: Concave corner (Bulges Inward).
 - **AutoCAD Mapping**: Uses `LWPOLYLINE` bulge values (Group Code 42).
 
 ### Example: U-Channel

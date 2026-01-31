@@ -383,6 +383,7 @@ class PCADParser:
         i += 1
         boundary = None
         hatch = None
+        islands = []
         while i < len(self.lines):
             line = re.sub(r'//.*$', '', self.lines[i]).strip()
             if not line:
@@ -391,11 +392,22 @@ class PCADParser:
             if line == '}': break
             m = re.search(r'boundary\s*=\s*(\w+)\.(\w+);', line)
             if m: boundary = {'sketch': m.group(1), 'polyline': m.group(2)}
-            m = re.search(r'hatch\s*=\s*(\w+);', line)
             if m: hatch = m.group(1)
+            
+            # islands = [Sketch.Polyline, Sketch.Polyline2];
+            m = re.search(r'islands\s*=\s*\[(.*?)\];', line)
+            if m:
+                islands_content = m.group(1)
+                for item in islands_content.split(','):
+                    item = item.strip()
+                    if not item: continue
+                    parts = item.split('.')
+                    if len(parts) == 2:
+                        islands.append({'sketch': parts[0].strip(), 'polyline': parts[1].strip()})
+            
             i += 1
         if boundary:
-            self.regions.append({'name': region_name, 'boundary': boundary, 'hatch': hatch})
+            self.regions.append({'name': region_name, 'boundary': boundary, 'hatch': hatch, 'islands': islands})
         return i
     def _parse_dimension(self, start_idx: int) -> int:
         """解析 dimension 块 - supports linear, vertical, radial, diameter"""
@@ -411,7 +423,9 @@ class PCADParser:
         # Common properties
         from_point = None
         to_point = None
+        to_point = None
         text = None
+        offset = None
         # Radial/diameter specific
         center = None
         radius = None
@@ -458,6 +472,11 @@ class PCADParser:
             if match:
                 text = match.group(1)
             
+            # offset = 500; or offset = -500;
+            match = re.search(r'offset\s*=\s*([^;]+);', line)
+            if match:
+                offset = match.group(1).strip()
+            
             i += 1
         
         # Store dimension based on type
@@ -467,7 +486,8 @@ class PCADParser:
                     'type': dim_type,
                     'from': from_point,
                     'to': to_point,
-                    'text': text
+                    'text': text,
+                    'offset': offset
                 })
         elif dim_type == 'radial':
             if center and radius:
@@ -2006,7 +2026,20 @@ class AutoLISPGenerator:
                 self.code.append(f"      (setvar \"HPNAME\" \"{mapped_pattern}\")")
                 self.code.append(f"      (setvar \"HPSCALE\" {scale})")
                 self.code.append(f"      (setvar \"HPANG\" (* {angle} (/ pi 180.0)))")
-                self.code.append(f"      (command \"._-BHATCH\" \"_S\" {ent_var_name} \"\" \"\")")
+                
+                # Build selection set for Hatch
+                self.code.append(f"      (setq ss (ssadd))")
+                self.code.append(f"      (ssadd {ent_var_name} ss)")
+                
+                # Add islands
+                for island in region.get('islands', []):
+                    i_sketch = island['sketch']
+                    i_polyline = island['polyline']
+                    i_ent_var = f"sketch_{i_sketch}_{i_polyline}"
+                    self.code.append(f"      (if (boundp '{i_ent_var}) (ssadd {i_ent_var} ss))")
+                
+                # -BHATCH with Selection Set
+                self.code.append(f"      (command \"._-BHATCH\" \"_S\" ss \"\" \"\")")
                 self.code.append(f"    )")
                 self.code.append(f"    (princ \"\\nWarning: Boundary entity {ent_var_name} not found for region {region['name']}\\n\")")
                 self.code.append("  )")
@@ -2024,9 +2057,13 @@ class AutoLISPGenerator:
                 from_expr = dim['from']
                 to_expr = dim['to']
                 text = dim.get('text')
+                offset = dim.get('offset')
                 
                 from_x, from_y = self._parse_point_expr(from_expr)
                 to_x, to_y = self._parse_point_expr(to_expr)
+                
+                # Convert offset to LISP expression
+                offset_lisp = self._convert_expr_to_lisp(offset) if offset else "100"
                 
                 self.code.append(f"  ; Dimension: {text or 'auto'}")
                 self.code.append(f"  (setq p1 (list {from_x} {from_y} 0.0))")
@@ -2035,12 +2072,12 @@ class AutoLISPGenerator:
                 if dim_type == 'linear':
                     self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
                     self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
-                    self.code.append(f"  (setq p3 (list mid_x (+ mid_y 100) 0.0))")
+                    self.code.append(f"  (setq p3 (list mid_x (+ mid_y {offset_lisp}) 0.0))")
                     self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
                 elif dim_type == 'vertical':
                     self.code.append(f"  (setq mid_x (/ (+ {from_x} {to_x}) 2.0))")
                     self.code.append(f"  (setq mid_y (/ (+ {from_y} {to_y}) 2.0))")
-                    self.code.append(f"  (setq p3 (list (+ mid_x 100) mid_y 0.0))")
+                    self.code.append(f"  (setq p3 (list (+ mid_x {offset_lisp}) mid_y 0.0))")
                     self.code.append(f"  (command \"._DIMLINEAR\" p1 p2 p3)")
                 else:
                     self.code.append(f"  (setq p3 (list (+ {from_x} 50) (+ {from_y} 50) 0.0))")
@@ -2895,13 +2932,29 @@ def main():
     generator = AutoLISPGenerator(parser)
     lisp_code = generator.generate()
     
-    # Write output
+    # Write output LISP
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(lisp_code)
     
+    # Generate .scr loader (AutoCAD script)
+    # AutoCAD often handles ANSI (mbcs/latin-1) better in .scr files
+    scr_file = output_file.with_suffix('.scr')
+    lisp_path_for_cad = str(output_file.absolute()).replace(chr(92), '/')
+    scr_content = f'(load "{lisp_path_for_cad}")\n(c:PCAD_Render)\n(command "._ZOOM" "_ALL")\n'
+    
+    try:
+        # Try 'mbcs' for Windows ANSI first, fallback to 'latin-1'
+        with open(scr_file, 'w', encoding='mbcs') as f:
+            f.write(scr_content)
+    except (LookupError, UnicodeEncodeError):
+        with open(scr_file, 'w', encoding='latin-1') as f:
+            f.write(scr_content)
+
     print(f"AutoLISP code written to: {output_file}")
+    print(f"AutoCAD script loader written to: {scr_file}")
     print(f"\nTo use in AutoCAD:")
-    print(f"  1. Load: (load \"{str(output_file.absolute()).replace(chr(92), '/')}\")")
+    print(f"  Option 1: Drag and drop {scr_file.name} into AutoCAD")
+    print(f"  Option 2: (load \"{lisp_path_for_cad}\")")
     
     # Generate example parameter values
     param_names = list(parser.params.keys())

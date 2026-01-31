@@ -21,37 +21,83 @@ region Concrete {
 
 ---
 
-## U-Channel Cross-Section (Single Loop)
+## U-Channel Cross-Section with Arc Curve
 
-Use a single closed polyline for the material boundary:
+A complete parametric U-channel with inner arc curve:
 
 ```pcad
-sketch U槽轮廓 layer=outline {
-    polyline boundary closed {
-        // 外底边
-        (0, 0) -> (B, 0)
-        // 右外壁
-        -> (B, d) -> (x_wing_right, H)
-        // 右翼缘顶面 -> 右内壁顶
-        -> (x_right_inner, H)
-        // 右内壁
-        -> (x_right_inner, t)
-        // 内底面
-        -> (x_left_inner, t)
-        // 左内壁
-        -> (x_left_inner, H)
-        // 左翼缘顶面
-        -> (x_wing_left, H)
-        // 左外壁
-        -> (0, d);
+units mm;
+
+params {
+    B = 1600;      // Bottom width
+    H = 1200;      // Total height
+    C = 350;       // Edge vertical height
+    a1 = 250;      // Top wall thickness
+    Ri = 2000;     // Inner radius (2.0m)
+    B_top = 2000;  // Top total width
+}
+
+derive {
+    half_B = B / 2;
+    half_B_top = B_top / 2;
+    inner_x = half_B_top - a1;
+    
+    // Arc center calculation
+    arc_center_y = H + sqrt(Ri * Ri - inner_x * inner_x);
+    arc_bottom_y = arc_center_y - Ri;
+    
+    // Intermediate points for arc approximation
+    x_mid = inner_x * 0.6;
+    y_mid = arc_center_y - sqrt(Ri * Ri - x_mid * x_mid);
+}
+
+layers {
+    outline: #00FFFF, 0.25;
+    hatch:   #B4B4B4, 0.10;
+    dim:     #00FFFF, 0.18;
+}
+
+sketch U_Section layer=outline {
+    polyline outer closed {
+        (-half_B, 0) -> 
+        (half_B, 0) -> 
+        (half_B, C) -> 
+        (half_B_top, H) -> 
+        (inner_x, H) -> 
+        (x_mid, y_mid) ->        // Arc approximation
+        (0, arc_bottom_y) -> 
+        (-x_mid, y_mid) ->       // Symmetric point
+        (-inner_x, H) -> 
+        (-half_B_top, H) -> 
+        (-half_B, C);
     }
 }
 
-region U槽断面 {
-    boundary = U槽轮廓.boundary;
+region ConcreteBody {
+    boundary = U_Section.outer;
     hatch = concrete;
 }
+
+dim vertical {
+    from = (-half_B_top - 100, 0);
+    to = (-half_B_top - 100, H);
+    text = "H";
+}
+
+dim horizontal {
+    from = (-half_B, -150);
+    to = (half_B, -150);
+    text = "B";
+}
+
+dim radial {
+    center = (0, arc_center_y);
+    radius = Ri;
+    text = "R=2.0";
+}
 ```
+
+> **Note**: Use `sqrt()` in `derive` block for arc geometry calculations. Add intermediate points for smooth curve approximation.
 
 ---
 
