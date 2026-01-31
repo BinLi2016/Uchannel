@@ -5,15 +5,14 @@
 
 ; =========================================
 ; Function: Set Parameters
-; Usage: (set-params H B a1 C R)
+; Usage: (set-params W H S D)
 ; =========================================
-(defun set-params (H_val B_val a1_val C_val R_val)
+(defun set-params (W_val H_val S_val D_val)
+  (setq W W_val)
   (setq H H_val)
-  (setq B B_val)
-  (setq a1 a1_val)
-  (setq C C_val)
-  (setq R R_val)
-  (princ (strcat "\nParameters set: " "H=" (rtos H) ", " "B=" (rtos B) ", " "a1=" (rtos a1) ", " "C=" (rtos C) ", " "R=" (rtos R) "\n"))
+  (setq S S_val)
+  (setq D D_val)
+  (princ (strcat "\nParameters set: " "W=" (rtos W) ", " "H=" (rtos H) ", " "S=" (rtos S) ", " "D=" (rtos D) "\n"))
   (princ)
 )
 
@@ -211,169 +210,145 @@
 ; =========================================
 (defun c:PCAD_Render ()
   (setvar "CMDECHO" 0)
-  (setvar "DIMSCALE" 10.0)
+  (setvar "DIMSCALE" 15.0)
   (setvar "DIMTXT" 10)
   (setvar "TEXTSIZE" 10)
 
   ; Check and set default parameters if not defined
-  (if (not (boundp 'H)) (setq H 3000.0))
-  (if (not (boundp 'B)) (setq B 3000.0))
-  (if (not (boundp 'a1)) (setq a1 500.0))
-  (if (not (boundp 'C)) (setq C 1200.0))
-  (if (not (boundp 'R)) (setq R 2000.0))
+  (if (not (boundp 'W)) (setq W 4000.0))
+  (if (not (boundp 'H)) (setq H 2000.0))
+  (if (not (boundp 'S)) (setq S 2400.0))
+  (if (not (boundp 'D)) (setq D 800.0))
 
   ; Calculate derived values
-  (setq W_inner (* 2 R))
-  (setq W_top (+ W_inner (* 2 a1)))
-  (setq slope_w (/ (- W_top B) 2.0))
-  (setq y_bot (- H R))
+  (setq R (/ D 2.0))
+  (setq cx1 (/ (- W S) 2.0))
+  (setq cx2 (- W cx1))
+  (setq cy (/ H 2.0))
 
   ; Setup layers
   (command "._-LAYER" "_M" "outline" "_C" "4" "" "_LW" "0.25" "" "")
+  (command "._-LAYER" "_M" "hatch" "_C" "8" "" "_LW" "0.15" "" "")
+  (command "._-LAYER" "_M" "dim" "_C" "4" "" "_LW" "0.18" "" "")
   (command "._-LAYER" "_M" "rebar" "_C" "1" "" "_LW" "0.2" "" "")
   (command "._-LAYER" "_M" "text" "_C" "3" "" "_LW" "0.18" "" "")
-  (command "._-LAYER" "_M" "dim" "_C" "4" "" "_LW" "0.18" "" "")
-  (command "._-LAYER" "_M" "hatch" "_C" "8" "" "_LW" "0.1" "" "")
 
   ; Setup text style: fsdb_e.shx,cadhzf.shx, width factor 0.7
   (command "._-STYLE" "Standard" "fsdb_e.shx,cadhzf.shx" 0 0.7 0 "_N" "_N" "")
 
-  ; Sketch: U_Section
+  ; Sketch: Outlines
   (command "._-LAYER" "_S" "outline" "")
-  ; Create LWPOLYLINE for U_Section_boundary with arc support
-  (setq pts_U_Section_boundary (list
-    (list (- 0 (/ B 2.0)) 0)
-    (list (/ B 2.0) 0)
-    (list (/ B 2.0) C)
-    (list (/ W_top 2.0) H)
-    (list (/ W_inner 2.0) H)
-    (list 0 y_bot)
-    (list (- 0 (/ W_inner 2.0)) H)
-    (list (- 0 (/ W_top 2.0)) H)
-    (list (- 0 (/ B 2.0)) C)
+  ; Create LWPOLYLINE for Outlines_Boundary with arc support
+  (setq pts_Outlines_Boundary (list
+    (list 0 0)
+    (list W 0)
+    (list W H)
+    (list 0 H)
   ))
-  (setq bulges_U_Section_boundary (list
+  (setq bulges_Outlines_Boundary (list
     0.0
-    0.0
-    0.0
-    0.0
-    'CALC  ; Arc to vertex 5
-    'CALC  ; Arc to vertex 6
     0.0
     0.0
     0.0
   ))
-  (setq bulges_U_Section_boundary (pcad-calc-bulges pts_U_Section_boundary (list
+  (setq bulges_Outlines_Boundary (pcad-calc-bulges pts_Outlines_Boundary (list
     0.0
     0.0
-    0.0
-    0.0
-    0.0
-    (- 0 R)
-    (- 0 R)
     0.0
     0.0
   ) T))
-  (setq ent_data_U_Section_boundary (list
+  (setq ent_data_Outlines_Boundary (list
     '(0 . "LWPOLYLINE")
     '(100 . "AcDbEntity")
     (cons 8 "outline")
     '(100 . "AcDbPolyline")
-    (cons 90 9)
+    (cons 90 4)
     (cons 70 1)
   ))
   (setq i 0)
-  (foreach pt pts_U_Section_boundary
-    (setq b (nth i bulges_U_Section_boundary))
-    (setq ent_data_U_Section_boundary
-      (append ent_data_U_Section_boundary
+  (foreach pt pts_Outlines_Boundary
+    (setq b (nth i bulges_Outlines_Boundary))
+    (setq ent_data_Outlines_Boundary
+      (append ent_data_Outlines_Boundary
         (list (cons 10 (list (car pt) (cadr pt) 0.0))
               (cons 42 b))
       )
     )
     (setq i (1+ i))
   )
-  (entmake ent_data_U_Section_boundary)
-  (setq sketch_U_Section_boundary (entlast))
+  (entmake ent_data_Outlines_Boundary)
+  (setq sketch_Outlines_Boundary (entlast))
+  ; Circle: Hole1
+  (command "._CIRCLE" (list cx1 cy 0.0) R)
+  (setq sketch_Outlines_Hole1 (entlast))
+  ; Circle: Hole2
+  (command "._CIRCLE" (list cx2 cy 0.0) R)
+  (setq sketch_Outlines_Hole2 (entlast))
 
-  ; Region: ConcreteFill
+  ; Region: TwinCellSection
   (command "._-LAYER" "_S" "hatch" "")
-  ; Create hatch from sketch: U_Section
-  (if (boundp 'sketch_U_Section_boundary)
+  ; Create hatch from sketch: Outlines
+  (if (boundp 'sketch_Outlines_Boundary)
     (progn
       (setvar "HPNAME" "ANSI31")
-      (setvar "HPSCALE" 10.0)
+      (setvar "HPSCALE" 15.0)
       (setvar "HPANG" (* 0 (/ pi 180.0)))
-      (command "._-BHATCH" "_S" sketch_U_Section_boundary "" "")
+      (setq ss (ssadd))
+      (ssadd sketch_Outlines_Boundary ss)
+      (if (boundp 'sketch_Outlines_Hole1) (ssadd sketch_Outlines_Hole1 ss))
+      (if (boundp 'sketch_Outlines_Hole2) (ssadd sketch_Outlines_Hole2 ss))
+      (command "._-BHATCH" "_S" ss "" "")
     )
-    (princ "\nWarning: Boundary entity sketch_U_Section_boundary not found for region ConcreteFill\n")
+    (princ "\nWarning: Boundary entity sketch_Outlines_Boundary not found for region TwinCellSection\n")
   )
 
   (command "._-LAYER" "_S" "dim" "")
-  ; Dimension: B
-  (setq p1 (list (- 0 (/ B 2.0)) -400 0.0))
-  (setq p2 (list (/ B 2.0) -400 0.0))
-  (setq p3 (list (+ (- 0 (/ B 2.0)) 50) (+ -400 50) 0.0))
-  (command "._DIMALIGNED" p1 p2 p3)
-  (setq ent (entlast))
-  (command "._DIMEDIT" "_N" "B" ent "")
-
-  (command "._-LAYER" "_S" "dim" "")
-  ; Dimension: H
-  (setq p1 (list (- 0 (- (/ W_top 2.0) 500)) 0 0.0))
-  (setq p2 (list (- 0 (- (/ W_top 2.0) 500)) H 0.0))
-  (setq mid_x (/ (+ (- 0 (- (/ W_top 2.0) 500)) (- 0 (- (/ W_top 2.0) 500))) 2.0))
-  (setq mid_y (/ (+ 0 H) 2.0))
-  (setq p3 (list (+ mid_x 100) mid_y 0.0))
-  (command "._DIMLINEAR" p1 p2 p3)
-  (setq ent (entlast))
-  (command "._DIMEDIT" "_N" "H" ent "")
-
-  (command "._-LAYER" "_S" "dim" "")
-  ; Dimension: C
-  (setq p1 (list (+ (/ B 2.0) 500) 0 0.0))
-  (setq p2 (list (+ (/ B 2.0) 500) C 0.0))
-  (setq mid_x (/ (+ (+ (/ B 2.0) 500) (+ (/ B 2.0) 500)) 2.0))
-  (setq mid_y (/ (+ 0 C) 2.0))
-  (setq p3 (list (+ mid_x 100) mid_y 0.0))
-  (command "._DIMLINEAR" p1 p2 p3)
-  (setq ent (entlast))
-  (command "._DIMEDIT" "_N" "C" ent "")
-
-  (command "._-LAYER" "_S" "dim" "")
-  ; Dimension: a1
-  (setq p1 (list (- 0 (/ W_top 2.0)) (+ H 400) 0.0))
-  (setq p2 (list (- 0 (/ W_inner 2.0)) (+ H 400) 0.0))
-  (setq p3 (list (+ (- 0 (/ W_top 2.0)) 50) (+ (+ H 400) 50) 0.0))
-  (command "._DIMALIGNED" p1 p2 p3)
-  (setq ent (entlast))
-  (command "._DIMEDIT" "_N" "a1" ent "")
-
-  (command "._-LAYER" "_S" "dim" "")
-  ; Dimension: a1
-  (setq p1 (list (/ W_inner 2.0) (+ H 400) 0.0))
-  (setq p2 (list (/ W_top 2.0) (+ H 400) 0.0))
-  (setq p3 (list (+ (/ W_inner 2.0) 50) (+ (+ H 400) 50) 0.0))
-  (command "._DIMALIGNED" p1 p2 p3)
-  (setq ent (entlast))
-  (command "._DIMEDIT" "_N" "a1" ent "")
-
-  (command "._-LAYER" "_S" "dim" "")
-  ; Dimension: 2.0
+  ; Dimension: 4000
   (setq p1 (list 0 H 0.0))
-  (setq p2 (list 0 y_bot 0.0))
-  (setq mid_x (/ (+ 0 0) 2.0))
-  (setq mid_y (/ (+ H y_bot) 2.0))
-  (setq p3 (list (+ mid_x 100) mid_y 0.0))
+  (setq p2 (list W H 0.0))
+  (setq mid_x (/ (+ 0 W) 2.0))
+  (setq mid_y (/ (+ H H) 2.0))
+  (setq p3 (list mid_x (+ mid_y 300) 0.0))
   (command "._DIMLINEAR" p1 p2 p3)
   (setq ent (entlast))
-  (command "._DIMEDIT" "_N" "2.0" ent "")
+  (command "._DIMEDIT" "_N" "4000" ent "")
 
-  ; --- Labels ---
-  ; Label: 单位：米
-  (command "._-LAYER" "_S" "text" "")
-  (setq lbl_pt (list 0 (+ H 1000) 0.0))
-  (command "._MTEXT" lbl_pt "_J" "_MC" "_H" (* (getvar "DIMSCALE") 10) "_W" 0 "单位：米" "")
+  (command "._-LAYER" "_S" "dim" "")
+  ; Dimension: 2000
+  (setq p1 (list W 0 0.0))
+  (setq p2 (list W H 0.0))
+  (setq mid_x (/ (+ W W) 2.0))
+  (setq mid_y (/ (+ 0 H) 2.0))
+  (setq p3 (list (+ mid_x 300) mid_y 0.0))
+  (command "._DIMLINEAR" p1 p2 p3)
+  (setq ent (entlast))
+  (command "._DIMEDIT" "_N" "2000" ent "")
+
+  (command "._-LAYER" "_S" "dim" "")
+  ; Dimension: 2400
+  (setq p1 (list cx1 0 0.0))
+  (setq p2 (list cx2 0 0.0))
+  (setq mid_x (/ (+ cx1 cx2) 2.0))
+  (setq mid_y (/ (+ 0 0) 2.0))
+  (setq p3 (list mid_x (+ mid_y -300) 0.0))
+  (command "._DIMLINEAR" p1 p2 p3)
+  (setq ent (entlast))
+  (command "._DIMEDIT" "_N" "2400" ent "")
+
+  (command "._-LAYER" "_S" "dim" "")
+  ; Radial Dimension: φ800
+  (setq center_pt (list cx2 cy 0.0))
+  (setq rad_val R)
+  (setq ang_rad (* 45 (/ pi 180.0)))
+  ; Calculate arc point on the circle at specified angle
+  (setq arc_pt (list (+ cx2 (* rad_val (cos ang_rad)))
+                     (+ cy (* rad_val (sin ang_rad))) 0.0))
+  ; Calculate leader endpoint (outside the arc)
+  (setq leader_pt (list (+ cx2 (* (* rad_val 1.3) (cos ang_rad)))
+                        (+ cy (* (* rad_val 1.3) (sin ang_rad))) 0.0))
+  ; Draw leader line from arc point to text location
+  (command "._LINE" arc_pt leader_pt "")
+  (command "._MTEXT" leader_pt "_J" "_ML" "_H" (* (getvar "DIMSCALE") 10) "_W" 0 "φ800" "")
 
   (setvar "CMDECHO" 1)
   (princ "\nP-CAD rendering complete.\n")
@@ -385,15 +360,14 @@
 ; =========================================
 ;
 ; Method 1: Set parameters then render
-;   (set-params 3000 3000 500 1200 2000)
+;   (set-params 4000 2000 2400 800)
 ;   (c:PCAD_Render)
 ;
 ; Method 2: Set parameters individually
-;   (setq H 3000.0)
-;   (setq B 3000.0)
-;   (setq a1 500.0)
-;   (setq C 1200.0)
-;   (setq R 2000.0)
+;   (setq W 4000.0)
+;   (setq H 2000.0)
+;   (setq S 2400.0)
+;   (setq D 800.0)
 ;   (c:PCAD_Render)
 ;
 ; Method 3: Use default parameters

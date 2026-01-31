@@ -1,0 +1,65 @@
+units mm;
+
+params {
+    W = 4000;
+    H = 2000;
+    S = 2400; // Center-to-center distance
+    D = 800;  // Diameter of circular holes
+}
+
+derive {
+    R = D / 2;
+    cx1 = (W - S) / 2;
+    cx2 = W - cx1;
+    cy = H / 2;
+}
+
+layers {
+    outline: #00FFFF, 0.25;
+    hatch:   #808080, 0.15;
+    dim:     #00FFFF, 0.18;
+}
+
+sketch Outlines layer=outline {
+    polyline Boundary closed {
+        (0, 0) -> (W, 0) -> (W, H) -> (0, H);
+    }
+    circle Hole1 (cx1, cy) r=R;
+    circle Hole2 (cx2, cy) r=R;
+}
+
+region TwinCellSection {
+    boundary = Outlines.Boundary;
+    islands = [Outlines.Hole1, Outlines.Hole2];
+    hatch = "ANSI31";
+}
+
+// Dimensions
+dim linear {
+    from = (0, H);
+    to = (W, H);
+    offset = 300;
+    text = "4000";
+}
+
+dim vertical {
+    from = (W, 0);
+    to = (W, H);
+    offset = 300;
+    text = "2000";
+}
+
+dim linear {
+    from = (cx1, 0);
+    to = (cx2, 0);
+    offset = -300;
+    text = "2400";
+}
+
+// Radial dimension for the hole
+dim radial {
+    center = (cx2, cy);
+    radius = R;
+    angle = 45;
+    text = "φ800";
+}
