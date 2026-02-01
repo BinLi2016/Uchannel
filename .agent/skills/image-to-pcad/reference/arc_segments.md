@@ -64,6 +64,18 @@ sketch U_Section {
 }
 ```
 
+### Example: Stadium / Capsule
+**Rule**: For `sketch`, `:r=R` applies to the *incoming* segment (previous point -> current point).
+
+```pcad
+polyline stadium closed {
+    (0, H) ->             // Start 
+    (W, H):r=R ->         // Line -> Arc
+    (W, 0) ->             // Right Arc -> Line
+    (0, 0):r=R ->         // Line -> Arc
+}
+```
+
 ---
 
 ## Geometry Semantics

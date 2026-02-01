@@ -105,7 +105,16 @@ For **grid layout without borders**:
 barshape_layout Details {
     grid = 3x3;
     cell_size = (100, 150);
-    place N1 at (0, 0) { label = "N1 Φ16"; note = "H3+50"; }
+    place N1 at (0, 0) { 
+        label = "N1 Φ16"; 
+        
+        // Advanced: Anchored Annotations
+        annotations = [
+            { text="Corner"; anchor=cell.top_left; offset=(5,-5); },
+            { text="Center"; anchor=cell.center; offset=(0,0); }
+        ];
+    }
+}
 }
 ```
 
@@ -118,12 +127,29 @@ Use `dim` blocks to annotate geometry.
 > **Align Dimension Lines**: To ensure professional alignment (baseline position), use the `offset` parameter.
 > - **Horizontal (`dim linear`)**: `offset` is vertical shift (+ up, - down).
 > - **Vertical (`dim vertical`)**: `offset` is horizontal shift (+ right, - left).
-> - **Rule**: Use the same `offset` value (e.g., `-500` or `H+500`) for all dimensions in the same row/column.
+> - **Units**: You can use `h` units to scale offsets by text height (e.g., `offset = 3h`).
+> - **Rule**: Use the same `offset` value (e.g., `-500` or `3.5h`) for all dimensions in the same row/column.
 
 ```pcad
 // Example: Aligning bottom dimensions
-dim linear { from=(0,0); to=(L1,0); offset=-500; text="2400"; }
-dim linear { from=(L1,0); to=(L1+L2,0); offset=-500; }
+// Example: Aligning bottom dimensions
+dim linear { from=(0,0); to=(L1,0); offset=3h; text="2400"; }
+dim linear { from=(L1,0); to=(L1+L2,0); offset=3h; }
+```
+
+### Step 7: Add Labels & Notes
+
+Use `label` blocks for general notes or titles.
+
+> [!TIP]
+> **Relative Positioning**: Use `anchor` to attach labels to tables or other entities. `offset` supports `h` units.
+
+```pcad
+label "Notes" {
+    text = "1. All dimensions in mm.\n2. Concrete grade C30.";
+    anchor = RebarTable.bottom_left;  // Anchors to table corner
+    offset = (0, -2.5h);              // 2.5 lines below table
+}
 ```
 
 ---
@@ -203,6 +229,20 @@ sketch U_Section layer=outline {
         (-inner_x, H) ->
         // ... end points ...
     }
+}
+```
+
+### Stadium / Capsule Pattern (Sketch)
+**Rule**: In a `sketch`, `:r=R` defines the *incoming* segment as an arc.
+- To draw an arc from A to B: Add `:r=R` to point **B**.
+- To draw a line from B to C: Leave point **C** plain.
+
+```pcad
+polyline stadium closed {
+    (0, H) ->             // Start 
+    (W, H):r=R ->         // Line -> Arc (Target has :r)
+    (W, 0) ->             // Right Arc -> Line (Target plain)
+    (0, 0):r=R ->         // Line -> Arc (Target has :r)
 }
 ```
 

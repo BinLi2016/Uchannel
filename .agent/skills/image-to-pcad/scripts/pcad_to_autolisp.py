@@ -2208,7 +2208,7 @@ class AutoLISPGenerator:
                 self.code.append(f"      (setvar \"HPNAME\" \"{mapped_pattern}\")")
                 self.code.append(f"      (setvar \"HPSCALE\" {scale})")
                 self.code.append(f"      (setvar \"HPANG\" (* {angle} (/ pi 180.0)))")
-                self.code.append(f"      (setvar \"HPOSTYLE\" 1) ; Normal island detection")
+                # self.code.append(f"      (setvar \"HPOSTYLE\" 1) ; Normal island detection")
                 
                 # Build selection set for Hatch
                 self.code.append(f"      (setq ss (ssadd))")

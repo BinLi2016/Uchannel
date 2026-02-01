@@ -1,0 +1,3 @@
+(load "f:/Uchannel/P-CAD-code/HollowPierSection.lsp")
+(c:PCAD_Render)
+(command "._ZOOM" "_ALL")

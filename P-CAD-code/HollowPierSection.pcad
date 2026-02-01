@@ -1,0 +1,89 @@
+units mm;
+
+params {
+    Outer_W = 400;
+    Outer_H = 300;
+    Inner_W = 320;
+    Inner_H = 200;
+}
+
+derive {
+    half_W = Outer_W / 2;
+    half_H = Outer_H / 2;
+    inner_half_W = Inner_W / 2;
+    inner_half_H = Inner_H / 2;
+    
+    // Stadium radius
+    Inner_R = inner_half_H;
+    
+    // Dimension offsets
+    dim_off = 50;
+}
+
+layers {
+    outline: #00FFFF, 0.25;
+    text:    #00FF00, 0.18;
+    dim:     #00FFFF, 0.18;
+    hatch:   #B4B4B4, 0.10;
+}
+
+hatch_style concrete_hatch {
+    pattern = ANSI31;
+    scale = 10.0;
+}
+
+sketch PierSection layer=outline {
+    // Outer boundary (Rectangle)
+    polyline outer closed {
+        (-half_W, -half_H) -> (half_W, -half_H) -> (half_W, half_H) -> (-half_W, half_H);
+    }
+    
+    // Inner stadium shape
+    polyline inner closed {
+        (-inner_half_W, -inner_half_H):r=Inner_R -> // Left Arc End (Start of Bottom)
+        (inner_half_W, -inner_half_H) ->            // Bottom Edge End (Straight)
+        (inner_half_W, inner_half_H):r=Inner_R ->   // Right Arc End (Start of Top)
+        (-inner_half_W, inner_half_H);              // Top Edge End (Straight)
+    }
+}
+
+region ConcreteBody {
+    boundary = PierSection.outer;
+    islands = [PierSection.inner];
+    hatch = concrete_hatch;
+    island_detection = explicit;
+}
+
+// Global Dimensions (Matching the Image)
+
+// 400 at top
+dim linear {
+    from = (-half_W, half_H);
+    to = (half_W, half_H);
+    offset = dim_off;
+    text = "400";
+}
+
+// 300 at right
+dim vertical {
+    from = (half_W, -half_H);
+    to = (half_W, half_H);
+    offset = dim_off;
+    text = "300";
+}
+
+// 320 at bottom (Inner width)
+dim linear {
+    from = (-inner_half_W, -inner_half_H);
+    to = (inner_half_W, -inner_half_H);
+    offset = -dim_off;
+    text = "320";
+}
+
+// 200 in the center (Inner height)
+dim vertical {
+    from = (0, -inner_half_H);
+    to = (0, inner_half_H);
+    offset = 0;
+    text = "200";
+}
