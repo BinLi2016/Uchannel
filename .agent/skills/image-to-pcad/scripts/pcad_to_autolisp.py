@@ -113,8 +113,16 @@ class PCADParser:
                 i = self._parse_region(i)
                 continue
             
-            elif line.startswith('dim'):
+            # 注意: 只匹配 'dim ' (带空格)，避免匹配 dim_chain/dim_spacing 等
+            # dim_chain 等暂不支持，跳过以避免死循环
+            elif line.startswith('dim '):
                 i = self._parse_dimension(i)
+                continue
+            
+            elif line.startswith('dim_'):
+                # dim_chain, dim_cumulative, dim_ordinate, dim_spacing 等暂未实现
+                # 跳过整个块以避免死循环
+                i = self._skip_block(i)
                 continue
             
             elif line.startswith('materials'):
@@ -168,8 +176,13 @@ class PCADParser:
                 continue
             
             elif line.startswith('label '):
-                i = self._parse_label(i)
+                # Check if it's a block label: label "Name" { ... }
+                if '{' in line and not 'e.g.' in line: # Simple check, avoid label="e.g."
+                     i = self._parse_label_block(i)
+                else:
+                     i = self._parse_label(i)
                 continue
+
             
             elif line.startswith('callout '):
                 i = self._parse_callout(i)
@@ -177,8 +190,54 @@ class PCADParser:
             
             i += 1
     
+    def _skip_block(self, start_idx: int) -> int:
+        """跳过未实现的块 (如 dim_chain, dim_spacing 等)，避免死循环"""
+        i = start_idx
+        line = self.lines[i].strip()
+        
+        # 如果当前行包含 { 但不包含 }，需要找到匹配的 }
+        if '{' in line and '}' not in line:
+            depth = 1
+            i += 1
+            while i < len(self.lines) and depth > 0:
+                l = self.lines[i].strip()
+                depth += l.count('{') - l.count('}')
+                i += 1
+            return i
+        elif '{' in line and '}' in line:
+            # 单行块，直接跳过
+            return i + 1
+        else:
+            # 没有块体，跳过当前行
+            return i + 1
+    
+    def _convert_unit_literal(self, value_str: str) -> float:
+        """将带单位的字面量转换为基础单位 (mm)
+        
+        支持: mm, cm, m (长度单位，转换为 mm)
+        其他单位 (kg, kg/m, m3) 保持原值不转换
+        """
+        value_str = value_str.strip()
+        
+        # 长度单位转换因子 (转为 mm)
+        length_factors = {
+            'mm': 1.0,
+            'cm': 10.0,
+            'm': 1000.0,
+        }
+        
+        # 匹配带单位的数字: 8cm, 0.55m, 12mm
+        unit_match = re.match(r'^([\d.]+)(mm|cm|m)$', value_str)
+        if unit_match:
+            val = float(unit_match.group(1))
+            unit = unit_match.group(2)
+            return val * length_factors.get(unit, 1.0)
+        
+        # 尝试直接解析为浮点数
+        return float(value_str)
+    
     def _parse_params(self, start_idx: int) -> int:
-        """解析 params 块"""
+        """解析 params 块，支持带单位的字面量 (如 8cm, 0.55m)"""
         i = start_idx
         i += 1  # Skip 'params {'
         while i < len(self.lines):
@@ -191,10 +250,14 @@ class PCADParser:
             match = re.search(r'(\w+)\s*=\s*([^;]+);', line)
             if match:
                 param_name = match.group(1)
+                raw_value = match.group(2).strip()
                 try:
-                    param_value = float(match.group(2))
-                except:
-                    param_value = match.group(2) # Keep as string if not float
+                    # 尝试转换带单位的字面量
+                    param_value = self._convert_unit_literal(raw_value)
+                except ValueError:
+                    # 如果转换失败，保持原字符串 (可能是表达式)
+                    param_value = raw_value
+                    print(f"WARNING: param '{param_name}' 值 '{raw_value}' 无法解析为数字，保留原值")
                 self.params[param_name] = {'value': param_value}
                 print(f"DEBUG: Found param: {param_name} = {param_value}")
             i += 1
@@ -746,8 +809,20 @@ class PCADParser:
                         i += 1
                         continue
                     if cl == '}': break
+                    # name: type label="...";
                     m = re.search(r'([\w\u4e00-\u9fa5]+):\s*([^;]+);', cl)
-                    if m: table['columns'][m.group(1)] = m.group(2).strip()
+                    if m:
+                        col_name = m.group(1)
+                        col_def = m.group(2).strip()
+                        # Extract label if present
+                        label = col_name # Default to name
+                        label_match = re.search(r'label\s*=\s*"([^"]+)"', col_def)
+                        if label_match:
+                            label = label_match.group(1)
+                            # Remove label from type string for cleaner storage (optional but good practice)
+                            # col_def = col_def.replace(label_match.group(0), '').strip()
+                        
+                        table['columns'][col_name] = {'type': col_def, 'label': label}
                     i += 1
             elif line.startswith('row'):
                 m = re.search(r'row\s*(?:(\w+)\s*)?\{([^}]*)\}', line)
@@ -834,15 +909,26 @@ class PCADParser:
                 m = re.search(r'scale\s*=\s*([^;]+);', line)
                 if m: sheet['scale'] = m.group(1)
             elif line.startswith('titleblock'):
-                i += 1
-                tb = {}
-                while i < len(self.lines):
-                    t_line = self.lines[i].strip()
-                    if t_line == '}': break
-                    m = re.search(r'(\w+)\s*=\s*"([^"]*)";', t_line)
-                    if m: tb[m.group(1)] = m.group(2)
+                # Check for single-line titleblock
+                if '{' in line and '}' in line:
+                    match = re.search(r'titleblock\s*\{\s*(.*)\s*\}', line)
+                    if match:
+                        content = match.group(1)
+                        tb = {}
+                        for m in re.finditer(r'(\w+)\s*=\s*"([^"]*)";', content):
+                            tb[m.group(1)] = m.group(2)
+                        sheet['titleblock'] = tb
+                else:
+                    # Multi-line
                     i += 1
-                sheet['titleblock'] = tb
+                    tb = {}
+                    while i < len(self.lines):
+                        t_line = self.lines[i].strip()
+                        if t_line == '}': break
+                        m = re.search(r'(\w+)\s*=\s*"([^"]*)";', t_line)
+                        if m: tb[m.group(1)] = m.group(2)
+                        i += 1
+                    sheet['titleblock'] = tb
             elif line.startswith('place'):
                 # place table Name;
                 m = re.search(r'place\s+(\w+)\s+([\w\u4e00-\u9fa5]+);', line)
@@ -936,6 +1022,80 @@ class PCADParser:
         self.views[name] = view
         print(f"DEBUG: Found view: {name}")
         return i
+    
+    def _parse_label(self, start_idx: int) -> int:
+        """解析 label "Text" at (x,y) layer=name;"""
+        i = start_idx
+        line = self.lines[i]
+        
+        # label "Text" at (x,y) layer=name;
+        match = re.search(r'label\s+"([^"]+)"\s+at\s+\(([^)]+)\)', line)
+        if match:
+            text = match.group(1)
+            at = match.group(2).strip()
+            layer = 'text'
+            
+            layer_match = re.search(r'layer\s*=\s*(\w+)', line)
+            if layer_match:
+                layer = layer_match.group(1)
+            
+            self.labels.append({
+                'text': text,
+                'at': at,
+                'layer': layer
+            })
+        return i + 1
+
+    def _parse_label_block(self, start_idx: int) -> int:
+        """解析 label "Title" { text=...; anchor=...; offset=...; }
+        
+        支持:
+        - label "Title" { ... } - Title 作为显示文本
+        - label "Title" { text="..."; } - text= 覆盖 Title 作为显示文本
+        """
+        i = start_idx
+        # label "Text" {
+        line = self.lines[i].strip()
+        match = re.search(r'label\s+"([^"]+)"\s*\{', line)
+        if not match: return i + 1
+        
+        title = match.group(1)
+        label_data = {'text': title, 'layer': 'text'}  # 默认使用 title
+        
+        i += 1
+        while i < len(self.lines):
+            line = re.sub(r'//.*$', '', self.lines[i]).strip()
+            if not line:
+                i += 1
+                continue
+            if line == '}': break
+            
+            # text = "..."; - 覆盖显示文本 (支持换行符 \n)
+            m = re.search(r'text\s*=\s*"([^"]+)";', line)
+            if m:
+                # 处理转义换行符
+                label_data['text'] = m.group(1).replace('\\n', '\n')
+            
+            # anchor = Entity.Point;
+            m = re.search(r'anchor\s*=\s*([\w\.]+);', line)
+            if m: label_data['anchor'] = m.group(1)
+            
+            # offset = (x, y);
+            m = re.search(r'offset\s*=\s*\(([\w\.\s\-\+,h]+)\);', line)  # 支持 h 单位
+            if m: label_data['offset'] = m.group(1)
+            
+            # layer = ...
+            m = re.search(r'layer\s*=\s*(\w+);', line)
+            if m: label_data['layer'] = m.group(1)
+
+            # at = ... (fallback for absolute positioning)
+            m = re.search(r'at\s*=\s*\(([^)]+)\);', line)
+            if m: label_data['at'] = m.group(1)
+            
+            i += 1
+            
+        self.labels.append(label_data)
+        return i + 1
     
     def _parse_notes(self, start_idx: int) -> int:
         """解析 notes at (x, y) layer=xxx { ... } 块"""
@@ -1112,23 +1272,6 @@ class PCADParser:
         self.bars_list.append(bars)
         print(f"DEBUG: Found bars: {bars['name']}")
         return i
-    
-    def _parse_label(self, start_idx: int) -> int:
-        """解析 label "text" at (x, y) layer=xxx; 语句"""
-        line = self.lines[start_idx].strip()
-        
-        # label "A-A" at (500,1200) layer=text;
-        m = re.search(r'label\s+"([^"]+)"\s+at\s*\(([^,]+),\s*([^)]+)\)(?:\s+layer\s*=\s*(\w+))?\s*;?', line)
-        if m:
-            label = {
-                'text': m.group(1),
-                'at': (m.group(2).strip(), m.group(3).strip()),
-                'layer': m.group(4) if m.group(4) else 'text'
-            }
-            self.labels.append(label)
-            print(f"DEBUG: Found label: {label['text']}")
-        
-        return start_idx + 1
     
     def _parse_callout(self, start_idx: int) -> int:
         """解析 callout Name { ... } 块"""
@@ -1344,6 +1487,14 @@ class PCADParser:
                             # Parse angle
                             a_m = re.search(r'angle\s*=\s*([-\d.]+)', ann_props_str)
                             if a_m: ann['angle'] = float(a_m.group(1))
+
+                            # Parse anchor
+                            anchor_m = re.search(r'anchor\s*=\s*([a-zA-Z0-9_\.]+)', ann_props_str)
+                            if anchor_m: ann['anchor'] = anchor_m.group(1)
+
+                            # Parse offset
+                            offset_m = re.search(r'offset\s*=\s*\(([\w\.\s\-\+,]+)\)', ann_props_str)
+                            if offset_m: ann['offset'] = offset_m.group(1)
                             
                             annotations.append(ann)
                     
@@ -1414,16 +1565,25 @@ class AutoLISPGenerator:
                         if nums:
                             max_dim = max(max_dim, max(map(abs, nums)))
                         
-        # 3. 检查参数值
-        if hasattr(self.parser, 'params'):
-            for param in self.parser.params.values():
-                val = param.get('value', 0)
-                if isinstance(val, (int, float)):
-                    max_dim = max(max_dim, abs(float(val)))
-                
+        if hasattr(self.parser, 'drawing_info') and self.parser.drawing_info:
+             if 'scale' in self.parser.drawing_info:
+                 scale_str = self.parser.drawing_info['scale']
+                 # If scale is 1:N, we might want DIMSCALE to be N?
+                 # Actually, usually DIMSCALE = Scale Factor
+                 if ':' in scale_str:
+                     parts = scale_str.split(':')
+                     try:
+                         factor = float(parts[1]) / float(parts[0])
+                         return factor
+                     except: pass
+
         # 目标比例：(最大尺寸 / 297) 舍入到 5 的倍数
         # dim-scale = ( (max bound size) / 297 ) round to 5's times
         raw_scale = max_dim / 297.0
+        # If raw_scale is small (< 1), default to 1
+        if raw_scale < 1.0:
+            return 1.0
+            
         scale = round(raw_scale / 5.0) * 5.0
         
         return float(max(1.0, scale))
@@ -2063,7 +2223,13 @@ class AutoLISPGenerator:
                 to_x, to_y = self._parse_point_expr(to_expr)
                 
                 # Convert offset to LISP expression
-                offset_lisp = self._convert_expr_to_lisp(offset) if offset else "100"
+                offset_val = offset if offset else "100"
+                if 'h' in str(offset_val):
+                     mult = str(offset_val).replace('h', '').strip()
+                     if not mult or mult == '-': mult += "1.0"
+                     offset_lisp = f"(* {mult} (getvar \"TEXTSIZE\"))"
+                else:
+                     offset_lisp = self._convert_expr_to_lisp(offset_val)
                 
                 self.code.append(f"  ; Dimension: {text or 'auto'}")
                 self.code.append(f"  (setq p1 (list {from_x} {from_y} 0.0))")
@@ -2338,26 +2504,87 @@ class AutoLISPGenerator:
 
 
     def _generate_labels(self):
-        """生成标签文字代码"""
-        if not self.parser.labels:
-            return
+        """生成 labels 代码 - 支持相对定位和多行文本
         
-        self.code.append("  ; --- Labels ---")
+        使用 MTEXT 代替 TEXT 以支持多行文本 (\\P 是 MTEXT 的换行符)
+        """
         for label in self.parser.labels:
-            text = label['text']
-            x_expr, y_expr = label['at']
-            layer = label.get('layer', 'text')
+            # 处理文本: 将 \n 转换为 MTEXT 换行符 \\P
+            label_text = label['text'].replace('\n', '\\P').replace('"', '\\"')
             
-            x_lisp = self._convert_expr_to_lisp(x_expr)
-            y_lisp = self._convert_expr_to_lisp(y_expr)
+            self.code.append(f"  ; Label: {label_text[:30]}...")
+            self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{label.get('layer', 'text')}\" \"\")")
             
-            self.code.append(f"  ; Label: {text}")
-            self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
-            self.code.append(f"  (setq lbl_pt (list {x_lisp} {y_lisp} 0.0))")
-            # Use MTEXT with middle center justification, applying DIMSCALE to height
-            self.code.append(f"  (command \"._MTEXT\" lbl_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LABEL_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
-        
-        self.code.append("")
+            anchor = label.get('anchor')
+            if anchor:
+                # anchor logic
+                # anchor assumes format Entity.Point
+                if '.' in anchor:
+                    entity_name, point_name = anchor.split('.', 1)
+                    
+                    # Assume table for now, maybe support others later
+                    # Variables: table_{name}_last_pos (x y z), table_{name}_last_size (w h)
+                    
+                    self.code.append(f"  (if (and (boundp 'table_{entity_name}_last_pos) (boundp 'table_{entity_name}_last_size))")
+                    self.code.append("    (progn")
+                    self.code.append(f"      (setq base_pos table_{entity_name}_last_pos)")
+                    self.code.append(f"      (setq dims table_{entity_name}_last_size)")
+                    self.code.append("      (setq w (car dims) h (cadr dims))")
+                    self.code.append("      (setq base_x (car base_pos) base_y (cadr base_pos))")
+                    
+                    # Calculate anchor point coordinates
+                    if point_name == 'top_left':
+                        self.code.append("      (setq anc_x base_x anc_y base_y)")
+                    elif point_name == 'top_center':
+                        self.code.append("      (setq anc_x (+ base_x (/ w 2.0)) anc_y base_y)")
+                    elif point_name == 'top_right':
+                        self.code.append("      (setq anc_x (+ base_x w) anc_y base_y)")
+                    elif point_name == 'bottom_left':
+                        self.code.append("      (setq anc_x base_x anc_y (- base_y h))")
+                    elif point_name == 'bottom_center':
+                        self.code.append("      (setq anc_x (+ base_x (/ w 2.0)) anc_y (- base_y h))")
+                    elif point_name == 'bottom_right':
+                        self.code.append("      (setq anc_x (+ base_x w) anc_y (- base_y h))")
+                    elif point_name == 'center':
+                        self.code.append("      (setq anc_x (+ base_x (/ w 2.0)) anc_y (- base_y (/ h 2.0)))")
+                    else:
+                        # Default to top_left
+                        self.code.append("      (setq anc_x base_x anc_y base_y)")
+                    
+                    # Apply Offset
+                    offset_str = label.get('offset', '0, 0')
+                    # Parse offset manually because of 'h' unit
+                    off_parts = [p.strip() for p in offset_str.split(',')]
+                    if len(off_parts) < 2: off_parts = ["0", "0"]
+                    
+                    # Helper to convert "2.5h" to "(* 2.5 (getvar \"TEXTSIZE\"))"
+                    def convert_h(val):
+                        if 'h' in val:
+                            mult = val.replace('h', '').strip()
+                            if not mult or mult == '-': mult += "1.0" # handle "h" or "-h"
+                            return f"(* {mult} (getvar \"TEXTSIZE\"))"
+                        return self._convert_expr_to_lisp(val)
+                    
+                    off_x_lisp = convert_h(off_parts[0])
+                    off_y_lisp = convert_h(off_parts[1])
+                    
+                    self.code.append(f"      (setq ins_pt (list (+ anc_x {off_x_lisp}) (+ anc_y {off_y_lisp}) 0.0))")
+                    # 使用 MTEXT 以支持多行文本
+                    self.code.append(f"      (command \"._MTEXT\" ins_pt \"_J\" \"_TL\" \"_H\" (getvar \"TEXTSIZE\") \"_W\" 0 \"{label_text}\" \"\")")
+                    self.code.append("    )")
+                    self.code.append(f"    (princ \"\\nWarning: Anchor entity {entity_name} not found or dimensions unknown.\\n\")")
+                    self.code.append("  )")
+            
+            else:
+                # Absolute positioning
+                at_expr = label.get('at')
+                if at_expr:
+                    at_x, at_y = self._parse_point_expr(at_expr)
+                    # 使用 MTEXT 以支持多行文本
+                    self.code.append(f"  (command \"._MTEXT\" (list {at_x} {at_y} 0.0) \"_J\" \"_TL\" \"_H\" (getvar \"TEXTSIZE\") \"_W\" 0 \"{label_text}\" \"\")")
+            
+            self.code.append("")
+
 
     def _generate_utility_functions(self):
         """生成渲染所需的通用 AutoLISP 函数"""
@@ -2588,8 +2815,104 @@ class AutoLISPGenerator:
         
         return segments
     
+    def _evaluate_table_expr(self, expr: str, row: Dict, col_keys: List[str]) -> Any:
+        """在行上下文中计算表格表达式 (用于 compute 列)
+        
+        支持: 列引用、基本算术运算 (+, -, *, /)
+        """
+        if not expr:
+            return ""
+        
+        # 将列名替换为行中的值
+        eval_expr = expr
+        for col in col_keys:
+            if col in eval_expr:
+                val = row.get(col, 0)
+                try:
+                    val = float(val) if val else 0
+                except (ValueError, TypeError):
+                    val = 0
+                eval_expr = re.sub(rf'\b{re.escape(col)}\b', str(val), eval_expr)
+        
+        # 安全地计算算术表达式
+        try:
+            # 只允许数字、运算符和括号
+            if re.match(r'^[\d\s\.\+\-\*\/\(\)]+$', eval_expr):
+                result = eval(eval_expr)
+                return round(result, 3) if isinstance(result, float) else result
+        except:
+            pass
+        
+        return expr  # 无法计算则返回原表达式
+    
+    def _compute_table_summary(self, rows: List[Dict], summary_defs: Dict, col_keys: List[str]) -> Dict:
+        """计算表格汇总 (summary)
+        
+        支持: sum(col), sum(col where predicate)
+        """
+        results = {}
+        
+        for sum_name, sum_expr in summary_defs.items():
+            # 解析 sum(col) 或 sum(col where predicate)
+            match = re.match(r'sum\((\w+)(?:\s+where\s+(.+))?\)', sum_expr)
+            if match:
+                col_name = match.group(1)
+                predicate = match.group(2)
+                
+                total = 0
+                for row in rows:
+                    # 检查谓词条件
+                    include = True
+                    if predicate:
+                        # 简单支持: 规格.grade == HRB400, 规格.dia >= 12
+                        # 这里做简化处理
+                        if '.grade' in predicate:
+                            # 提取 规格.grade == XXX
+                            pred_match = re.search(r'(\w+)\.grade\s*==\s*(\w+)', predicate)
+                            if pred_match:
+                                spec_col = pred_match.group(1)
+                                expected_grade = pred_match.group(2)
+                                spec_val = str(row.get(spec_col, ''))
+                                # 检查是否包含 grade (如 "HRB400-Φ12" 或 "Φ12")
+                                include = expected_grade in spec_val
+                        elif '.dia' in predicate:
+                            pred_match = re.search(r'(\w+)\.dia\s*(>=|<=|>|<|==)\s*(\d+)', predicate)
+                            if pred_match:
+                                spec_col = pred_match.group(1)
+                                op = pred_match.group(2)
+                                threshold = int(pred_match.group(3))
+                                spec_val = str(row.get(spec_col, ''))
+                                # 提取直径数字 (如 "Φ12" -> 12)
+                                dia_match = re.search(r'Φ(\d+)', spec_val)
+                                if dia_match:
+                                    dia = int(dia_match.group(1))
+                                    if op == '>=': include = dia >= threshold
+                                    elif op == '<=': include = dia <= threshold
+                                    elif op == '>': include = dia > threshold
+                                    elif op == '<': include = dia < threshold
+                                    elif op == '==': include = dia == threshold
+                                else:
+                                    include = False
+                    
+                    if include:
+                        try:
+                            total += float(row.get(col_name, 0) or 0)
+                        except (ValueError, TypeError):
+                            pass
+                
+                results[sum_name] = round(total, 3)
+            
+            # count()
+            elif sum_expr == 'count()':
+                results[sum_name] = len(rows)
+        
+        return results
+    
     def _generate_tables(self):
-        """生成表格代码 - generates AutoLISP code to draw tables"""
+        """生成表格代码 - generates AutoLISP code to draw tables
+        
+        支持 compute (计算列) 和 summary (汇总行)
+        """
         if not self.parser.tables:
             return
         
@@ -2599,16 +2922,93 @@ class AutoLISPGenerator:
             table_type = table.get('type', 'schedule')
             columns = table.get('columns', {})
             rows = table.get('rows', [])
+            compute_defs = table.get('compute', {})
+            summary_defs = table.get('summary', {})
             
             self.code.append(f"  ; --- Table: {name} ---")
             
-            # Generate column names list
-            col_names = list(columns.keys())
-            quoted_cols = [f'"{c}"' for c in col_names]
-            cols_str = ' '.join(quoted_cols)
+            # 获取列名列表
+            col_keys = list(columns.keys())
+            
+            # 应用 compute 公式到每一行
+            processed_rows = []
+            for row in rows:
+                new_row = dict(row)
+                for comp_col, comp_expr in compute_defs.items():
+                    computed_val = self._evaluate_table_expr(comp_expr, new_row, col_keys)
+                    new_row[comp_col] = computed_val
+                processed_rows.append(new_row)
+            
+            # 计算 summary
+            summary_results = {}
+            if summary_defs:
+                summary_results = self._compute_table_summary(processed_rows, summary_defs, col_keys)
+            
+            # 用处理后的行替换原始行
+            rows = processed_rows
+            
+            # Generate column names list (use labels if available)
+            col_names = []
+            col_labels = []
+            for c_name, c_data in columns.items():
+                col_names.append(c_name)
+                # Check if c_data is dict (new parser) or string (old parser support)
+                if isinstance(c_data, dict):
+                    col_labels.append(f'"{c_data.get("label", c_name)}"')
+                else:
+                    col_labels.append(f'"{c_name}"')
+            
+            # The structure in LISP for iteration needs to match keys, but we want to draw LABELS
+            # We'll create a separate list for keys and labels? 
+            # Current implementation iterates `table_{name}_cols` to draw header cells.
+            # So `table_{name}_cols` MUST contain the display strings (Labels).
+            
+            cols_str = ' '.join(col_labels)
             self.code.append(f"  (setq table_{name}_cols '({cols_str}))")
             
-            # Generate rows data as list of lists
+            # CALCULATE DYNAMIC COLUMN WIDTHS
+            col_widths = []
+            col_keys = list(columns.keys())
+            
+            # Helper: estimate text width (assumes height 10.0, aspect 0.8)
+            # Chinese characters are approx 1.0 width factor, others 0.8 usually
+            scale = getattr(self, 'estimated_scale', 1.0)
+            # Use the global TABLE_CELL_TEXT_HEIGHT relative to scale
+            # We want the calculated width to match the RENDERED text size
+            # Rendered text height = TABLE_CELL_TEXT_HEIGHT * scale (e.g. 10 * 5 = 50)
+            eff_text_h = TABLE_CELL_TEXT_HEIGHT * scale
+            eff_padding = 5.0 * scale
+
+            def estimate_width(text):
+                l = 0
+                for char in str(text):
+                    if '\u4e00' <= char <= '\u9fff':
+                        l += TEXT_WIDTH_FACTOR
+                    else:
+                        l += 0.5 
+                return (l * eff_text_h) + eff_padding
+            
+            for col_key in col_keys:
+                # 1. Header label width
+                c_data = columns[col_key]
+                label = c_data.get('label', col_key) if isinstance(c_data, dict) else col_key
+                max_w = estimate_width(label)
+                
+                # 2. Data rows width (使用处理后的 rows)
+                for row in rows:
+                    val = row.get(col_key, "")
+                    max_w = max(max_w, estimate_width(val))
+                
+                # 3. Summary values width
+                for sum_name, sum_val in summary_results.items():
+                    max_w = max(max_w, estimate_width(f"{sum_name}: {sum_val}"))
+                
+                col_widths.append(max(max_w, 40.0)) # Min width 40
+            
+            widths_str = ' '.join([f"{w:.1f}" for w in col_widths])
+            self.code.append(f"  (setq table_{name}_widths '({widths_str}))")
+            
+            # Generate rows data as list of lists (使用处理后的 rows，包含 compute 计算结果)
             self.code.append(f"  (setq table_{name}_data '(")
             for i, row in enumerate(rows):
                 row_values = []
@@ -2620,49 +3020,99 @@ class AutoLISPGenerator:
                 self.code.append(f"    ({' '.join(row_values)})")
             self.code.append("  ))")
             
+            # 生成 summary 数据 (汇总行)
+            if summary_results:
+                self.code.append(f"  ; Summary for table {name}")
+                self.code.append(f"  (setq table_{name}_summary '(")
+                for sum_name, sum_val in summary_results.items():
+                    self.code.append(f'    ("{sum_name}" "{sum_val}")')
+                self.code.append("  ))")
+            
             # Generate a helper function to draw this table
-            self.code.append(f"  (defun draw-table-{name} (ins_pt cell_w cell_h / x y col_idx row_data val cell_pt shape_func shape_pt)")
+            # cell_w is now effectively ignored or used as a base, but widely superseded by table_{name}_widths
+            self.code.append(f"  (defun draw-table-{name} (ins_pt cell_w_ignored cell_h / x y cur_x col_idx row_data val cell_pt shape_func shape_pt w)")
             self.code.append("    (setq x (car ins_pt) y (cadr ins_pt))")
             
             # Header
             self.code.append("    (setq col_idx 0)")
+            self.code.append("    (setq cur_x x)")
             self.code.append(f"    (foreach col_name table_{name}_cols")
-            self.code.append("      (setq cell_pt (list (+ x (* col_idx cell_w)) y 0.0))")
-            self.code.append("      (draw-table-cell cell_pt cell_w cell_h col_name)")
+            self.code.append(f"      (setq w (nth col_idx table_{name}_widths))")
+            self.code.append("      (setq cell_pt (list cur_x y 0.0))")
+            self.code.append("      (draw-table-cell cell_pt w cell_h col_name)")
+            self.code.append("      (setq cur_x (+ cur_x w))")
             self.code.append("      (setq col_idx (1+ col_idx))")
             self.code.append("    )")
             self.code.append("    (setq y (- y cell_h))")
             
             # Data Rows
-            barshape_cols = [idx for idx, (c_name, c_type) in enumerate(columns.items()) if 'barshape_ref' in c_type]
+            # Data Rows
+            # Identify which columns are barshape refs
+            barshape_cols = []
+            for idx, (c_name, c_data) in enumerate(columns.items()):
+                c_type = ""
+                if isinstance(c_data, dict):
+                    c_type = c_data.get('type', '')
+                else:
+                    c_type = c_data
+                
+                if 'barshape_ref' in c_type:
+                    barshape_cols.append(idx)
             
             self.code.append(f"    (foreach row_data table_{name}_data")
             self.code.append("      (setq col_idx 0)")
+            self.code.append("      (setq cur_x x)")
             self.code.append("      (foreach val row_data")
-            self.code.append("        (setq cell_pt (list (+ x (* col_idx cell_w)) y 0.0))")
+            self.code.append(f"        (setq w (nth col_idx table_{name}_widths))")
+            self.code.append("        (setq cell_pt (list cur_x y 0.0))")
             
             if barshape_cols:
                 col_list_str = ' '.join(map(str, barshape_cols))
                 self.code.append(f"        (if (member col_idx '({col_list_str}))")
                 self.code.append("          (progn")
-                self.code.append("            (draw-table-cell cell_pt cell_w cell_h \"\")")
+                self.code.append("            (draw-table-cell cell_pt w cell_h \"\")")
                 self.code.append("            (setq shape_func (read (strcat \"draw-barshape-\" val)))")
                 self.code.append("            (if (and val (/= val \"\"))")
                 # Pass scale 0.05 for table cells
                 self.code.append("              ((eval shape_func) cell_pt 0.05)")
                 self.code.append("            )")
-                self.code.append("            )")
-
                 self.code.append("          )")
-                self.code.append("          (draw-table-cell cell_pt cell_w cell_h val)")
+                self.code.append("          (draw-table-cell cell_pt w cell_h val)")
                 self.code.append("        )")
             else:
-                self.code.append("        (draw-table-cell cell_pt cell_w cell_h val)")
+                self.code.append("        (draw-table-cell cell_pt w cell_h val)")
                 
+            self.code.append("        (setq cur_x (+ cur_x w))")
             self.code.append("        (setq col_idx (1+ col_idx))")
             self.code.append("      )")
             self.code.append("      (setq y (- y cell_h))")
             self.code.append("    )")
+            
+            # 渲染 summary 行 (汇总)
+            if summary_results:
+                self.code.append(f"    ; Render summary rows")
+                self.code.append(f"    (if (boundp 'table_{name}_summary)")
+                self.code.append(f"      (foreach sum_item table_{name}_summary")
+                self.code.append(f"        (setq sum_label (car sum_item))")
+                self.code.append(f"        (setq sum_val (cadr sum_item))")
+                self.code.append(f"        (setq cur_x x)")
+                # 汇总行: 第一列显示标签，最后一列显示值，中间列为空
+                self.code.append(f"        (setq col_idx 0)")
+                self.code.append(f"        (setq total_w (apply '+ table_{name}_widths))")
+                # 简化: 合并所有列为一行，显示 "标签: 值"
+                self.code.append(f"        (setq cell_pt (list cur_x y 0.0))")
+                self.code.append(f"        (draw-table-cell cell_pt total_w cell_h (strcat sum_label \": \" sum_val))")
+                self.code.append(f"        (setq y (- y cell_h))")
+                self.code.append(f"      )")
+                self.code.append(f"    )")
+            
+            self.code.append(f"    (setq table_{name}_last_pos ins_pt)")
+            # Calculate dimensions
+            # Width is sum of col widths
+            self.code.append(f"    (setq total_w (apply '+ table_{name}_widths))") 
+            self.code.append(f"    (setq total_h (- (cadr ins_pt) y))")
+            self.code.append(f"    (setq table_{name}_last_size (list total_w total_h))")
+            
             self.code.append("  )")
             self.code.append("")
         
@@ -2718,7 +3168,7 @@ class AutoLISPGenerator:
             if placements:
                 self.code.append(f"  ; Render placements for {name}")
                 # Default cell dimensions for tables (larger for barshape columns)
-                cell_w = 80.0   # Increased from 40 to accommodate scaled barshapes
+                cell_w = 250.0   # Increased to 250 to accommodate text
                 cell_h = 60.0   # Increased from 10 to accommodate scaled barshapes
                 current_y = 0.0
 
@@ -2821,10 +3271,54 @@ class AutoLISPGenerator:
                         angle = ann.get('angle', 0)
                         
                         if text:
-                            # Calculate absolute position relative to cell shape origin
+                            # START RELATIVE POSITIONING LOGIC
+                            anchor = ann.get('anchor')
+                            offset_str = ann.get('offset', '0,0')
+                            
+                            if anchor:
+                                # Parse anchor: cell.point
+                                # Available LISP vars: x, y (center), cell_w, cell_h
+                                self.code.append(f"    ; Anchor: {anchor}")
+                                
+                                # Default base to center (x, y)
+                                self.code.append("    (setq anc_x x anc_y y)")
+                                
+                                if 'top_left' in anchor:
+                                    self.code.append("    (setq anc_x (- x (* 0.5 cell_w)) anc_y (+ y (* 0.5 cell_h)))")
+                                elif 'top_center' in anchor:
+                                    self.code.append("    (setq anc_x x anc_y (+ y (* 0.5 cell_h)))")
+                                elif 'top_right' in anchor:
+                                    self.code.append("    (setq anc_x (+ x (* 0.5 cell_w)) anc_y (+ y (* 0.5 cell_h)))")
+                                elif 'bottom_left' in anchor:
+                                    self.code.append("    (setq anc_x (- x (* 0.5 cell_w)) anc_y (- y (* 0.5 cell_h)))")
+                                elif 'bottom_center' in anchor:
+                                    self.code.append("    (setq anc_x x anc_y (- y (* 0.5 cell_h)))")
+                                elif 'bottom_right' in anchor:
+                                    self.code.append("    (setq anc_x (+ x (* 0.5 cell_w)) anc_y (- y (* 0.5 cell_h)))")
+                                
+                                # Parse offset
+                                off_parts = [p.strip() for p in str(offset_str).split(',')]
+                                if len(off_parts) < 2: off_parts = ["0", "0"]
+                                
+                                def convert_h_layout(val):
+                                    if 'h' in str(val):
+                                        mult = str(val).replace('h', '').strip()
+                                        if not mult or mult == '-': mult += "1.0"
+                                        return f"(* {mult} (getvar \"TEXTSIZE\"))"
+                                    return self._convert_expr_to_lisp(val)
+
+                                off_x = convert_h_layout(off_parts[0])
+                                off_y = convert_h_layout(off_parts[1])
+                                
+                                self.code.append(f"    (setq ann_pt (list (+ anc_x {off_x}) (+ anc_y {off_y}) 0.0))")
+                                
+                            else:
+                                # Old absolute behavior: relative to base_pt (which is cell center - 5y?? No, base_pt is slightly offset)
+                                # Actually base_pt was defined as (list x (- y 5) 0.0)
+                                self.code.append(f"    (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
+                                self.code.append(f"    (setq ann_pt (list (+ (car base_pt) {at_x}) (+ (cadr base_pt) {at_y}) 0.0))")
+
                             self.code.append(f"    (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
-                            self.code.append(f"    (setq ann_pt (list (+ (car base_pt) {at_x}) (+ (cadr base_pt) {at_y}) 0.0))")
-                            # Use Middle Center justification
                             if angle != 0:
                                 self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
                             else:
