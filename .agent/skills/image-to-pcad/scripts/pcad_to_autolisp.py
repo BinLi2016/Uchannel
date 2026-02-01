@@ -212,10 +212,11 @@ class PCADParser:
             return i + 1
     
     def _convert_unit_literal(self, value_str: str) -> float:
-        """将带单位的字面量转换为基础单位 (mm)
+        """将带单位的字面量转换为基础单位
         
-        支持: mm, cm, m (长度单位，转换为 mm)
-        其他单位 (kg, kg/m, m3) 保持原值不转换
+        支持:
+        - 长度单位: mm, cm, m (转换为 mm)
+        - 质量/其他单位: kg, kg/m, m3 (保持原值)
         """
         value_str = value_str.strip()
         
@@ -226,12 +227,16 @@ class PCADParser:
             'm': 1000.0,
         }
         
-        # 匹配带单位的数字: 8cm, 0.55m, 12mm
-        unit_match = re.match(r'^([\d.]+)(mm|cm|m)$', value_str)
+        # 匹配带单位的数字 (注意: kg/m 要在 m 之前匹配)
+        unit_match = re.match(r'^([\d.]+)(mm|cm|kg/m|m3|m|kg)$', value_str)
         if unit_match:
             val = float(unit_match.group(1))
             unit = unit_match.group(2)
-            return val * length_factors.get(unit, 1.0)
+            # 长度单位转换为 mm
+            if unit in length_factors:
+                return val * length_factors[unit]
+            # 其他单位 (kg, kg/m, m3) 保持原值
+            return val
         
         # 尝试直接解析为浮点数
         return float(value_str)
@@ -1514,6 +1519,21 @@ class AutoLISPGenerator:
         self.parser = parser
         self.code = []
     
+    @staticmethod
+    def _escape_lisp_string(text: str) -> str:
+        """转义 LISP 字符串中的特殊字符
+        
+        处理:
+        - 反斜杠 \\ -> \\\\
+        - 双引号 " -> \\"
+        """
+        if not text:
+            return text
+        # 先转义反斜杠，再转义引号
+        text = text.replace('\\', '\\\\')
+        text = text.replace('"', '\\"')
+        return text
+    
     def generate(self) -> str:
         """生成完整的 AutoLISP 代码"""
         self.code = []
@@ -1738,15 +1758,17 @@ class AutoLISPGenerator:
         """将 P-CAD 表达式转换为 AutoLISP 表达式，支持单位转换"""
         expr = expr.strip()
         
-        # Handle unit-qualified literals (e.g. 8cm, 12mm, 0.55m)
-        unit_match = re.search(r'^([\d.]+)(mm|cm|m|kg|kg/m|m3)$', expr)
+        # 处理带单位的字面量 (如 8cm, 12mm, 0.55m, 1.5kg, 0.888kg/m)
+        # 注意: kg/m 要在 m 之前匹配
+        unit_match = re.match(r'^([\d.]+)(mm|cm|kg/m|m3|m|kg)$', expr)
         if unit_match:
             val = float(unit_match.group(1))
             unit = unit_match.group(2)
-            # Normalize to mm (or other base unit as per parser_units)
-            factors = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0}
-            if unit in factors:
-                return str(val * factors[unit])
+            # 长度单位转换为 mm
+            length_factors = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0}
+            if unit in length_factors:
+                return str(val * length_factors[unit])
+            # 其他单位 (kg, kg/m, m3) 保持原值
             return str(val)
 
         # Handle built-in accessors (simplified)
@@ -2186,6 +2208,7 @@ class AutoLISPGenerator:
                 self.code.append(f"      (setvar \"HPNAME\" \"{mapped_pattern}\")")
                 self.code.append(f"      (setvar \"HPSCALE\" {scale})")
                 self.code.append(f"      (setvar \"HPANG\" (* {angle} (/ pi 180.0)))")
+                self.code.append(f"      (setvar \"HPOSTYLE\" 1) ; Normal island detection")
                 
                 # Build selection set for Hatch
                 self.code.append(f"      (setq ss (ssadd))")
@@ -2196,7 +2219,10 @@ class AutoLISPGenerator:
                     i_sketch = island['sketch']
                     i_polyline = island['polyline']
                     i_ent_var = f"sketch_{i_sketch}_{i_polyline}"
-                    self.code.append(f"      (if (boundp '{i_ent_var}) (ssadd {i_ent_var} ss))")
+                    self.code.append(f"      (if (boundp '{i_ent_var})")
+                    self.code.append(f"        (ssadd {i_ent_var} ss)")
+                    self.code.append(f"        (princ \"\\nWarning: Island entity {i_ent_var} not found for region {region['name']}\\n\")")
+                    self.code.append(f"      )")
                 
                 # -BHATCH with Selection Set
                 self.code.append(f"      (command \"._-BHATCH\" \"_S\" ss \"\" \"\")")
@@ -2251,7 +2277,8 @@ class AutoLISPGenerator:
                 
                 self.code.append(f"  (setq ent (entlast))")
                 if text:
-                    self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{text}\" ent \"\")")
+                    escaped_text = self._escape_lisp_string(text)
+                    self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{escaped_text}\" ent \"\")")
             
             elif dim_type == 'radial':
                 center_expr = dim['center']
@@ -2278,7 +2305,7 @@ class AutoLISPGenerator:
                 self.code.append(f"  ; Draw leader line from arc point to text location")
                 self.code.append(f"  (command \"._LINE\" arc_pt leader_pt \"\")")
                 # Add text at leader end
-                dim_text = text if text else f"R{{{radius_lisp}}}"
+                dim_text = self._escape_lisp_string(text) if text else f"R{{{radius_lisp}}}"
                 self.code.append(f"  (command \"._MTEXT\" leader_pt \"_J\" \"_ML\" \"_H\" (* (getvar \"DIMSCALE\") {DIM_TEXT_HEIGHT}) \"_W\" 0 \"{dim_text}\" \"\")")
 
             
@@ -2305,8 +2332,9 @@ class AutoLISPGenerator:
                 self.code.append(f"  (setq circ_ent (entlast))")
                 self.code.append(f"  (command \"._DIMDIAMETER\" arc_pt leader_pt)")
                 if text:
+                    escaped_text = self._escape_lisp_string(text)
                     self.code.append(f"  (setq ent (entlast))")
-                    self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{text}\" ent \"\")")
+                    self.code.append(f"  (command \"._DIMEDIT\" \"_N\" \"{escaped_text}\" ent \"\")")
                 self.code.append(f"  (entdel circ_ent)")
             
             self.code.append("")
@@ -2400,18 +2428,28 @@ class AutoLISPGenerator:
                 # Parse segment string: "(x1, y1):r=R -> (x2, y2) -> ..."
                 parsed_segments = self._parse_segments_to_points(segments)
                 
-                # Validate variable references in segment expressions
-                all_defined_vars = set(self.parser.params.keys()) | set(self.parser.derive.keys()) | set(dims.keys())
+                # 验证 segment 表达式中的变量引用
+                # 根据 P-CAD 规范 19.5，segment 表达式只能引用 params 和 derive 中的变量
+                # dims 仅用于文档目的，不应在 segment 中直接使用
+                global_vars = set(self.parser.params.keys()) | set(self.parser.derive.keys())
+                
+                # 内置常量和函数
+                builtin_names = {'pi', 'sin', 'cos', 'tan', 'sqrt', 'abs', 'atan', 'asin', 'acos', 'pow', 'max', 'min', 'floor', 'fix'}
 
                 for seg in parsed_segments:
                     if seg['point']:
                         for expr in seg['point']:
                             var_names = re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', str(expr))
                             for var in var_names:
-                                if var not in all_defined_vars and not var.replace('.', '').isdigit():
-                                    if var not in ['pi', 'sin', 'cos', 'tan', 'sqrt', 'abs']:
-                                        print(f"WARNING: Barshape '{name}' uses undefined variable '{var}' in segment expression '{expr}'")
-                                        print(f"         Ensure '{var}' is defined in 'params', 'derive', or local 'dims'.")
+                                if var not in global_vars and not var.replace('.', '').isdigit():
+                                    if var not in builtin_names:
+                                        # 检查是否是 dims 中的变量
+                                        if var in dims:
+                                            print(f"WARNING: Barshape '{name}' 在 segment 中使用了 dims 变量 '{var}'")
+                                            print(f"         根据 P-CAD 规范，dims 仅用于文档。请将 '{var}' 移至 'derive' 块。")
+                                        else:
+                                            print(f"WARNING: Barshape '{name}' 使用了未定义变量 '{var}' (表达式: '{expr}')")
+                                            print(f"         请确保 '{var}' 在 'params' 或 'derive' 块中定义。")
                 
                 if parsed_segments:
                     self.code.append(f"  ; Dims: {dims}")
@@ -2428,9 +2466,12 @@ class AutoLISPGenerator:
                     self.code.append(f"  (defun draw-barshape-{name} (base_pt scale / {local_vars_str})")
                     self.code.append("    (setq sc (if scale scale 1.0))")
 
-                    # Initialize local dims
+                    # 初始化 dims 变量 (向后兼容)
+                    # 注意: 根据 P-CAD 规范 19.5，dims 仅用于文档
+                    # 但为了向后兼容，仍在 LISP 中初始化这些变量
+                    # 推荐做法: 将需要在 segment 中使用的变量放在 derive 块
                     if dims:
-                        self.code.append(f"    ; Initialize local dims")
+                        self.code.append(f"    ; Initialize dims (向后兼容，推荐使用 derive)")
                         for d_name, d_expr in dims.items():
                             lisp_expr = self._convert_expr_to_lisp(d_expr)
                             self.code.append(f"    (setq {d_name} {lisp_expr})")
@@ -2509,8 +2550,9 @@ class AutoLISPGenerator:
         使用 MTEXT 代替 TEXT 以支持多行文本 (\\P 是 MTEXT 的换行符)
         """
         for label in self.parser.labels:
-            # 处理文本: 将 \n 转换为 MTEXT 换行符 \\P
-            label_text = label['text'].replace('\n', '\\P').replace('"', '\\"')
+            # 处理文本: 转义特殊字符，将 \n 转换为 MTEXT 换行符 \\P
+            label_text = self._escape_lisp_string(label['text'])
+            label_text = label_text.replace('\\n', '\\P')  # MTEXT 换行符
             
             self.code.append(f"  ; Label: {label_text[:30]}...")
             self.code.append(f"  (command \"._-LAYER\" \"_S\" \"{label.get('layer', 'text')}\" \"\")")
@@ -3014,8 +3056,8 @@ class AutoLISPGenerator:
                 row_values = []
                 for col in col_names:
                     val = row.get(col, '')
-                    # Escape quotes in value
-                    val = str(val).replace('"', '\\"')
+                    # 转义 LISP 字符串中的特殊字符
+                    val = self._escape_lisp_string(str(val))
                     row_values.append(f'"{val}"')
                 self.code.append(f"    ({' '.join(row_values)})")
             self.code.append("  ))")
@@ -3214,8 +3256,9 @@ class AutoLISPGenerator:
             if title:
                 # Scale offset and height
                 title_x = origin[0] + total_w / 2
+                escaped_title = self._escape_lisp_string(title)
                 self.code.append(f"  (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                self.code.append(f"  (command \"._MTEXT\" (list {title_x} (+ {origin[1]} (* (getvar \"DIMSCALE\") 2.0)) 0.0) \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_TITLE_TEXT_HEIGHT}) \"_W\" {total_w} \"{title}\" \"\")")
+                self.code.append(f"  (command \"._MTEXT\" (list {title_x} (+ {origin[1]} (* (getvar \"DIMSCALE\") 2.0)) 0.0) \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_TITLE_TEXT_HEIGHT}) \"_W\" {total_w} \"{escaped_title}\" \"\")")
             
             # Generate drawing function for this layout
             self.code.append(f"  (defun draw-layout-{name} (/ x y cell_w cell_h base_pt label_pt note_pt)")
@@ -3240,11 +3283,12 @@ class AutoLISPGenerator:
                 
                 # Draw label above shape
                 if label:
+                    escaped_label = self._escape_lisp_string(label)
                     self.code.append(f"    ; Label: {label}")
                     # Scale offset and height
                     self.code.append(f"    (setq label_pt (list x (+ y (* (getvar \"DIMSCALE\") 5.0)) 0.0))")
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_LABEL_TEXT_HEIGHT}) \"_W\" (- cell_w 10) \"{label}\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" label_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_LABEL_TEXT_HEIGHT}) \"_W\" (- cell_w 10) \"{escaped_label}\" \"\")")
                 
                 # Draw the barshape (using a larger scale for standalone display)
                 if shape and shape in self.parser.barshapes:
@@ -3254,11 +3298,12 @@ class AutoLISPGenerator:
                 
                 # Draw note below shape
                 if note:
+                    escaped_note = self._escape_lisp_string(note)
                     self.code.append(f"    ; Note: {note}")
                     # Scale offset and height
                     self.code.append(f"    (setq note_pt (list x (- y (* (getvar \"DIMSCALE\") 6.0)) 0.0))")
                     self.code.append(f"    (command \"._-LAYER\" \"_S\" \"text\" \"\")")
-                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_NOTE_TEXT_HEIGHT}) \"_W\" (- cell_w 10) \"{note}\" \"\")")
+                    self.code.append(f"    (command \"._MTEXT\" note_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {LAYOUT_NOTE_TEXT_HEIGHT}) \"_W\" (- cell_w 10) \"{escaped_note}\" \"\")")
                 
                 # Draw custom annotations
                 annotations = p.get('annotations', [])
@@ -3318,11 +3363,12 @@ class AutoLISPGenerator:
                                 self.code.append(f"    (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
                                 self.code.append(f"    (setq ann_pt (list (+ (car base_pt) {at_x}) (+ (cadr base_pt) {at_y}) 0.0))")
 
+                            escaped_ann_text = self._escape_lisp_string(text)
                             self.code.append(f"    (command \"._-LAYER\" \"_S\" \"{layer}\" \"\")")
                             if angle != 0:
-                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_R\" {angle} \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{escaped_ann_text}\" \"\")")
                             else:
-                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{text}\" \"\")")
+                                self.code.append(f"    (command \"._MTEXT\" ann_pt \"_J\" \"_MC\" \"_H\" (* (getvar \"DIMSCALE\") {ANNOTATION_TEXT_HEIGHT}) \"_W\" 0 \"{escaped_ann_text}\" \"\")")
                             
                 self.code.append("")
             
